@@ -11,6 +11,7 @@
 # =============================================================================
 
 import tkinter as tk
+from tkinter import filedialog, messagebox
 import socket
 import threading
 import queue
@@ -19,12 +20,86 @@ import os
 from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import conexao
+from utils import conexao, relatorio
 
 COR_FUNDO  = "#1a1a2e"
 COR_PAINEL = "#16213e"
 COR_LOG    = "#0d0d1a"
 COR_TEXTO  = "#ecf0f1"
+
+
+# ---------------------------------------------------------------------------
+# Janela de relatório
+# ---------------------------------------------------------------------------
+
+def _abrir_janela_relatorio(parent, titulo, texto, fn_salvar_pdf=None):
+    janela = tk.Toplevel(parent)
+    janela.title(titulo)
+    janela.geometry("720x540")
+    janela.configure(bg=COR_FUNDO)
+    janela.resizable(True, True)
+
+    frame_txt = tk.Frame(janela, bg=COR_FUNDO)
+    frame_txt.pack(fill="both", expand=True, padx=12, pady=(12, 0))
+
+    sb = tk.Scrollbar(frame_txt, orient="vertical")
+    sb.pack(side="right", fill="y")
+
+    txt = tk.Text(
+        frame_txt,
+        bg=COR_LOG, fg=COR_TEXTO,
+        font=("Consolas", 10),
+        relief="flat", bd=0,
+        wrap="none",
+        highlightthickness=0,
+        padx=10, pady=10,
+        yscrollcommand=sb.set,
+    )
+    txt.pack(side="left", fill="both", expand=True)
+    sb.config(command=txt.yview)
+    txt.insert("1.0", texto)
+    txt.config(state="disabled")
+
+    frame_btns = tk.Frame(janela, bg=COR_FUNDO)
+    frame_btns.pack(fill="x", padx=12, pady=10)
+
+    def salvar_txt():
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Arquivo de texto", "*.txt")],
+            initialfile="relatorio_sase_{}.txt".format(
+                datetime.now().strftime("%Y%m%d_%H%M%S")
+            ),
+            parent=janela,
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(texto)
+
+    tk.Button(
+        frame_btns, text="Salvar PDF",
+        bg="#c0392b", fg="white",
+        font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2",
+        command=lambda: fn_salvar_pdf(janela) if fn_salvar_pdf else None,
+        padx=16, pady=6,
+        activebackground="#922b21", activeforeground="white",
+    ).pack(side="left", padx=(0, 6))
+
+    tk.Button(
+        frame_btns, text="Salvar .txt",
+        bg="#2980b9", fg="white",
+        font=("Segoe UI", 10), relief="flat", cursor="hand2",
+        command=salvar_txt, padx=16, pady=6,
+        activebackground="#1a5276", activeforeground="white",
+    ).pack(side="left", padx=(0, 6))
+
+    tk.Button(
+        frame_btns, text="Fechar",
+        bg="#7f8c8d", fg="white",
+        font=("Segoe UI", 10), relief="flat", cursor="hand2",
+        command=janela.destroy, padx=16, pady=6,
+        activebackground="#626567", activeforeground="white",
+    ).pack(side="left")
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +115,10 @@ class ServidorSASE:
         self.proximo_N = 1
         self.proximo_P = 1
         self.normals_consecutivos = 0
+
+        # Histórico de atendimentos: [{ordem, senha, tipo, guiche, hora}]
+        self.historico_atendimentos = []
+        self._contador_ordem = 0
 
         # Guichês registrados: {id_guiche: socket}
         self.tas_conectados = {}
@@ -82,6 +161,14 @@ class ServidorSASE:
         with self.lock:
             sea = self._proximo_da_fila()
             if sea:
+                self._contador_ordem += 1
+                self.historico_atendimentos.append({
+                    "ordem":  self._contador_ordem,
+                    "senha":  sea,
+                    "tipo":   "Prioritario" if sea.startswith("P") else "Normal",
+                    "guiche": id_guiche,
+                    "hora":   datetime.now(),
+                })
                 resposta = f"Guichê {id_guiche} chama: {sea}"
                 tvs_snapshot = list(self.tvs_conectadas)
             else:
@@ -160,7 +247,7 @@ class ServidorSASE:
                         f"Guichê {id_guiche} desconectado  "
                         f"[Ativos: {sorted(self.tas_conectados.keys())}]", "ta"
                     )
-                return  # conn.close() roda no finally externo
+                return
 
             # --- Terminal de Visualização (conexão permanente) ---
             elif tipo == "TV":
@@ -200,10 +287,10 @@ class AppServidor:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("SRV — Servidor SASE")
-        self.root.geometry("640x560")
+        self.root.geometry("640x580")
         self.root.configure(bg=COR_FUNDO)
         self.root.resizable(True, True)
-        self.root.minsize(500, 420)
+        self.root.minsize(500, 440)
 
         self._fila_ui = queue.Queue()
         self._build_ui()
@@ -225,28 +312,39 @@ class AppServidor:
             font=("Segoe UI", 14, "bold")
         ).pack(side="left", padx=20, pady=12)
 
+        # Botão relatório no cabeçalho
+        tk.Button(
+            frame_header, text="Gerar Relatorio",
+            bg="#8e44ad", fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat", cursor="hand2",
+            padx=12, pady=4,
+            command=self._abrir_relatorio,
+            activebackground="#6c3483", activeforeground="white",
+        ).pack(side="right", padx=(8, 20), pady=8)
+
         self.lbl_status = tk.Label(
             frame_header, text="● Iniciando...",
             bg=COR_PAINEL, fg="#f39c12",
             font=("Segoe UI", 9)
         )
-        self.lbl_status.pack(side="right", padx=20)
+        self.lbl_status.pack(side="right", padx=8)
 
         # --- Contadores ---
         frame_cont = tk.Frame(self.root, bg="#0f3460")
         frame_cont.pack(fill="x", padx=18, pady=(12, 0))
 
-        self.lbl_fila_n = self._criar_contador(frame_cont, "FILA NORMAL",     "#27ae60")
-        self.lbl_fila_p = self._criar_contador(frame_cont, "FILA PRIORITÁRIA","#e67e22")
-        self.lbl_guiches = self._criar_contador(frame_cont, "GUICHÊS ATIVOS", "#3498db")
-        self.lbl_tvs    = self._criar_contador(frame_cont, "TVs ATIVAS",      "#9b59b6")
+        self.lbl_fila_n  = self._criar_contador(frame_cont, "FILA NORMAL",      "#27ae60")
+        self.lbl_fila_p  = self._criar_contador(frame_cont, "FILA PRIORITARIA", "#e67e22")
+        self.lbl_guiches = self._criar_contador(frame_cont, "GUICHES ATIVOS",   "#3498db")
+        self.lbl_tvs     = self._criar_contador(frame_cont, "TVs ATIVAS",       "#9b59b6")
 
         # --- Guichês registrados ---
         frame_guiches = tk.Frame(self.root, bg="#0f3460")
         frame_guiches.pack(fill="x", padx=18, pady=(2, 10))
 
         tk.Label(
-            frame_guiches, text="Guichês:",
+            frame_guiches, text="Guiches:",
             bg="#0f3460", fg="#7f8c8d",
             font=("Segoe UI", 8)
         ).pack(side="left", padx=10, pady=4)
@@ -300,6 +398,53 @@ class AppServidor:
         lbl.pack(pady=(0, 6))
         return lbl
 
+    def _abrir_relatorio(self):
+        with self.servidor.lock:
+            historico = list(self.servidor.historico_atendimentos)
+            fn        = len(self.servidor.fila_normal)
+            fp        = len(self.servidor.fila_prioritaria)
+            guiches   = sorted(self.servidor.tas_conectados.keys())
+
+        log_txt = self.txt_log.get("1.0", "end")
+        titulo  = "RELATORIO DE ATENDIMENTOS - SASE (todos os guiches)"
+
+        # Extras: fila restante + stats de sessão
+        extras = {}
+        extras["Fila Normal restante"]       = fn
+        extras["Fila Prioritaria restante"]  = fp
+        extras["Total aguardando atendimento"] = fn + fp
+        extras["Guiches ativos"]             = ", ".join(guiches) if guiches else "nenhum"
+        extras.update(relatorio._stats_sessao(historico))
+
+        texto = relatorio.gerar_txt(titulo, historico, com_guiche=True, extras=extras)
+
+        def salvar_pdf(janela_pai):
+            path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile="relatorio_sase_{}.pdf".format(
+                    datetime.now().strftime("%Y%m%d_%H%M%S")
+                ),
+                parent=janela_pai,
+            )
+            if not path:
+                return
+            ok, msg = relatorio.gerar_pdf(
+                path, titulo, historico,
+                log_texto=log_txt, com_guiche=True, extras=extras,
+            )
+            if ok:
+                tk.messagebox.showinfo("PDF salvo", "Arquivo salvo em:\n{}".format(path), parent=janela_pai)
+            else:
+                tk.messagebox.showerror("Erro ao gerar PDF", msg, parent=janela_pai)
+
+        _abrir_janela_relatorio(
+            self.root,
+            "Relatorio de Atendimentos - SRV",
+            texto,
+            fn_salvar_pdf=salvar_pdf,
+        )
+
     def _enfileirar_log(self, mensagem, tag="sistema"):
         hora = datetime.now().strftime("%H:%M:%S")
         self._fila_ui.put(("log", hora, mensagem, tag))
@@ -320,7 +465,6 @@ class AppServidor:
                 _, texto, cor = evento
                 self.lbl_status.config(text=texto, fg=cor)
 
-        # Atualiza contadores e lista de guichês
         if hasattr(self, "servidor"):
             with self.servidor.lock:
                 fn      = len(self.servidor.fila_normal)
@@ -334,7 +478,7 @@ class AppServidor:
             self.lbl_guiches.config(text=str(len(guiches)))
 
             if guiches:
-                texto = "  ".join(f"Guichê {g}" for g in guiches)
+                texto = "  ".join(f"Guiche {g}" for g in guiches)
             else:
                 texto = "nenhum registrado"
             self.lbl_guiches_lista.config(text=texto)
@@ -350,7 +494,7 @@ class AppServidor:
 
             self._fila_ui.put(("status", f"● Online  —  {conexao.HOST}:{conexao.PORTA_SRV}", "#2ecc71"))
             self._enfileirar_log(f"Servidor iniciado em {conexao.HOST}:{conexao.PORTA_SRV}", "sistema")
-            self._enfileirar_log("Aguardando conexões de TS, TA e TV...", "sistema")
+            self._enfileirar_log("Aguardando conexoes de TS, TA e TV...", "sistema")
 
             while True:
                 conn, addr = srv_socket.accept()

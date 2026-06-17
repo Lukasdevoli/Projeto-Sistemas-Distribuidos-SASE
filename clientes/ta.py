@@ -49,15 +49,17 @@
 # =============================================================================
 
 import tkinter as tk
-from tkinter import simpledialog
+from tkinter import filedialog, messagebox, simpledialog
 import socket
 import threading
 import queue
 import sys
 import os
+import random
+from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import conexao, audio
+from utils import conexao, audio, relatorio
 
 COR_FUNDO    = "#1a3a1a"
 COR_HEADER   = "#145214"
@@ -65,6 +67,39 @@ COR_DISPLAY  = "#0d1a0d"
 COR_BOTAO    = "#27ae60"
 COR_TEXTO    = "#ecf0f1"
 COR_SUBTEXTO = "#7f8c8d"
+
+_PIADAS = [
+    "Por que o programador usa oculos?\nPorque nao consegue C# (C-sharp = ver afiado).",
+    "Um programador foi ao mercado.\nEsposa: 'Compre leite. Se tiver ovos, traga uma duzia.'\nVoltou com 12 litros de leite.",
+    "O que o zero disse pro oito?\nBelo cinto!",
+    "Qual e o animal favorito do programador?\nO bug. Aparece quando menos se espera.",
+    "Por que o Python e bom para iniciantes?\nPorque nao tem chaves para perder.",
+    "Por que o programador foi ao medico?\nPorque ficava levantando exceptions.",
+    "Por que o if foi ao medico?\nEstava sem condicoes.",
+    "Qual e a musica favorita do programador?\nWhile My Guitar Gently Loops.",
+    "Por que o Java virou cafe?\nPorque ficava travando a maquina.",
+    "Um SQL entra num bar e pergunta: 'Posso me sentar?'\nO barman diz: 'Pode, mas com JOIN condicoes.'"
+]
+
+_NOMES_TRISTES = [
+    "Guiche Sem Nome",
+    "Ninguem me nomeou",
+    "Alguem teve preguica de mim",
+    "Guiche do Esquecido",
+    "Eu Precisava de um Nome",
+    "Sem Identidade S/A",
+    "Por favor me da um nome",
+]
+
+def _piada_terminal():
+    sep = "=" * 52
+    piada = random.choice(_PIADAS)
+    print("\n" + sep)
+    print("  Piada do dia (voce nao digitou nada, merece):")
+    print()
+    for linha in piada.splitlines():
+        print("  " + linha)
+    print(sep + "\n")
 
 
 class AppTerminalAtendimento:
@@ -74,21 +109,25 @@ class AppTerminalAtendimento:
 
         id_guiche = simpledialog.askstring(
             "Terminal de Atendimento",
-            "Digite o número deste guichê (ex: 1, 2, 3):",
+            "Digite o numero deste guiche (ex: 1, 2, 3):",
             parent=self.root
         )
         if not id_guiche or not id_guiche.strip():
-            self.root.destroy()
-            return
+            _piada_terminal()
+            id_guiche = random.choice(_NOMES_TRISTES)
 
         self.id_guiche = id_guiche.strip()
-        self._socket  = None
-        self._fila_ui = queue.Queue()
-        self._ativo   = True   # False quando a janela é fechada
+        self._socket   = None
+        self._fila_ui  = queue.Queue()
+        self._ativo    = True
+
+        # Histórico local de atendimentos deste guichê
+        self._historico    = []
+        self._contador_seq = 0
 
         self.root.deiconify()
         self.root.title(f"TA — Guichê {self.id_guiche}")
-        self.root.geometry("420x520")
+        self.root.geometry("420x560")
         self.root.configure(bg=COR_FUNDO)
         self.root.resizable(False, False)
 
@@ -107,10 +146,21 @@ class AppTerminalAtendimento:
             frame_header, text="TERMINAL DE ATENDIMENTO",
             bg=COR_HEADER, fg=COR_TEXTO,
             font=("Segoe UI", 13, "bold")
-        ).pack(pady=(10, 2))
+        ).pack(side="left", padx=16, pady=(10, 2))
+
+        # Botão relatório no cabeçalho
+        tk.Button(
+            frame_header, text="Relatorio",
+            bg="#8e44ad", fg="white",
+            font=("Segoe UI", 8, "bold"),
+            relief="flat", cursor="hand2",
+            padx=10, pady=3,
+            command=self._abrir_relatorio,
+            activebackground="#6c3483", activeforeground="white",
+        ).pack(side="right", padx=12, pady=8)
 
         frame_sub = tk.Frame(frame_header, bg=COR_HEADER)
-        frame_sub.pack(pady=(0, 10))
+        frame_sub.pack(fill="x", padx=16, pady=(0, 10))
 
         tk.Label(
             frame_sub, text=f"GUICHÊ  {self.id_guiche}",
@@ -144,7 +194,7 @@ class AppTerminalAtendimento:
 
         # --- Botão chamar ---
         self.btn_chamar = tk.Button(
-            self.root, text="CHAMAR PRÓXIMA SENHA",
+            self.root, text="CHAMAR PROXIMA SENHA",
             bg=COR_BOTAO, fg="white",
             font=("Segoe UI", 13, "bold"),
             relief="flat", cursor="hand2", height=2,
@@ -156,7 +206,7 @@ class AppTerminalAtendimento:
 
         # --- Status ---
         self.lbl_status = tk.Label(
-            self.root, text="Aguardando conexão com o servidor...",
+            self.root, text="Aguardando conexao com o servidor...",
             bg=COR_FUNDO, fg=COR_SUBTEXTO,
             font=("Segoe UI", 9)
         )
@@ -164,7 +214,7 @@ class AppTerminalAtendimento:
 
         # --- Histórico ---
         tk.Label(
-            self.root, text="HISTÓRICO DE CHAMADAS",
+            self.root, text="HISTORICO DE CHAMADAS",
             bg=COR_FUNDO, fg=COR_SUBTEXTO,
             font=("Segoe UI", 8, "bold")
         ).pack(anchor="w", padx=30)
@@ -205,7 +255,7 @@ class AppTerminalAtendimento:
                     self._fila_ui.put(("resposta", dados.decode("utf-8")))
 
             except (ConnectionRefusedError, TimeoutError, OSError):
-                pass  # servidor offline ou inacessível
+                pass
             except Exception:
                 pass
             finally:
@@ -214,20 +264,111 @@ class AppTerminalAtendimento:
             if not self._ativo:
                 break
 
-            # Aguarda 3 segundos e tenta reconectar
             self._fila_ui.put(("reconectando",))
             time.sleep(3)
 
     def _chamar(self):
         if not self._socket:
-            self.lbl_status.config(text="Sem conexão com o servidor.", fg="#e74c3c")
+            self.lbl_status.config(text="Sem conexao com o servidor.", fg="#e74c3c")
             return
         self.btn_chamar.config(state="disabled")
-        self.lbl_status.config(text="Solicitando próxima senha...", fg="#f39c12")
+        self.lbl_status.config(text="Solicitando proxima senha...", fg="#f39c12")
         try:
             self._socket.send(f"TA_SOLICITAR|{self.id_guiche}".encode("utf-8"))
         except Exception as e:
             self._fila_ui.put(("erro", f"Falha ao enviar: {e}"))
+
+    def _abrir_relatorio(self):
+        titulo = "RELATORIO DE ATENDIMENTOS - GUICHE {}".format(self.id_guiche)
+        extras = {"Guiche": self.id_guiche}
+        extras.update(relatorio._stats_sessao(self._historico))
+        texto  = relatorio.gerar_txt(titulo, self._historico, com_guiche=False, extras=extras)
+
+        janela = tk.Toplevel(self.root)
+        janela.title("Relatorio — Guiche {}".format(self.id_guiche))
+        janela.geometry("640x480")
+        janela.configure(bg=COR_FUNDO)
+        janela.resizable(True, True)
+
+        frame_txt = tk.Frame(janela, bg=COR_FUNDO)
+        frame_txt.pack(fill="both", expand=True, padx=12, pady=(12, 0))
+
+        sb = tk.Scrollbar(frame_txt, orient="vertical")
+        sb.pack(side="right", fill="y")
+
+        txt = tk.Text(
+            frame_txt,
+            bg=COR_DISPLAY, fg=COR_TEXTO,
+            font=("Consolas", 10),
+            relief="flat", bd=0,
+            wrap="none",
+            highlightthickness=0,
+            padx=10, pady=10,
+            yscrollcommand=sb.set,
+        )
+        txt.pack(side="left", fill="both", expand=True)
+        sb.config(command=txt.yview)
+        txt.insert("1.0", texto)
+        txt.config(state="disabled")
+
+        frame_btns = tk.Frame(janela, bg=COR_FUNDO)
+        frame_btns.pack(fill="x", padx=12, pady=10)
+
+        def salvar_pdf():
+            path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile="relatorio_guiche{}_{}.pdf".format(
+                    self.id_guiche, datetime.now().strftime("%Y%m%d_%H%M%S")
+                ),
+                parent=janela,
+            )
+            if not path:
+                return
+            ok, msg = relatorio.gerar_pdf(
+                path, titulo, self._historico, com_guiche=False, extras=extras
+            )
+            if ok:
+                messagebox.showinfo("PDF salvo", "Arquivo salvo em:\n{}".format(path), parent=janela)
+            else:
+                messagebox.showerror("Erro ao gerar PDF", msg, parent=janela)
+
+        def salvar_txt():
+            path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Arquivo de texto", "*.txt")],
+                initialfile="relatorio_guiche{}_{}.txt".format(
+                    self.id_guiche, datetime.now().strftime("%Y%m%d_%H%M%S")
+                ),
+                parent=janela,
+            )
+            if path:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(texto)
+
+        tk.Button(
+            frame_btns, text="Salvar PDF",
+            bg="#c0392b", fg="white",
+            font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2",
+            command=salvar_pdf, padx=16, pady=6,
+            activebackground="#922b21", activeforeground="white",
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            frame_btns, text="Salvar .txt",
+            bg="#2980b9", fg="white",
+            font=("Segoe UI", 10), relief="flat", cursor="hand2",
+            command=salvar_txt, padx=16, pady=6,
+            activebackground="#1a5276", activeforeground="white",
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Button(
+            frame_btns, text="Fechar",
+            bg="#7f8c8d", fg="white",
+            font=("Segoe UI", 10), relief="flat", cursor="hand2",
+            command=janela.destroy, padx=16, pady=6,
+            activebackground="#626567", activeforeground="white",
+        ).pack(side="left")
 
     def _poll_queue(self):
         while not self._fila_ui.empty():
@@ -242,7 +383,7 @@ class AppTerminalAtendimento:
 
             elif tipo == "reconectando":
                 self.lbl_conexao.config(text="● Reconectando...", fg="#f39c12")
-                self.lbl_status.config(text="Servidor indisponível. Tentando reconectar...", fg="#f39c12")
+                self.lbl_status.config(text="Servidor indisponivel. Tentando reconectar...", fg="#f39c12")
                 self.btn_chamar.config(state="disabled")
 
             elif tipo == "resposta":
@@ -256,6 +397,16 @@ class AppTerminalAtendimento:
                     self.lbl_senha.config(text=senha, fg="#2ecc71")
                     self.lbl_status.config(text="Senha chamada com sucesso.", fg=COR_TEXTO)
                     self.listbox.insert(0, msg)
+
+                    # Registra no histórico local
+                    self._contador_seq += 1
+                    self._historico.append({
+                        "ordem": self._contador_seq,
+                        "senha": senha,
+                        "tipo":  "Prioritario" if senha.startswith("P") else "Normal",
+                        "hora":  datetime.now(),
+                    })
+
                     audio.tocar()
 
             elif tipo == "erro":

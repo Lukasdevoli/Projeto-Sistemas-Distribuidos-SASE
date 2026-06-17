@@ -1,0 +1,79 @@
+================================================================
+  SASE — Sistema de Atendimento por Senha Eletrônica
+  Instituto Federal do Ceará — Campus Crato
+  Disciplina: Sistemas Distribuídos
+================================================================
+
+REQUISITOS
+----------
+  - Python 3.10 ou superior
+    Download: https://www.python.org/downloads/
+
+  - Biblioteca pygame (para o som)
+    Instalação: abra o terminal e execute o comando abaixo
+
+      pip install -r requirements.txt
+
+    Ou manualmente:
+
+      pip install pygame
+
+
+COMO EXECUTAR
+-------------
+  Após instalar as dependências, basta executar:
+
+      python iniciar.py
+
+  Isso abrirá automaticamente as 4 janelas do sistema:
+
+      [1] SRV — Servidor SASE
+          Gerencia as filas e coordena todos os módulos.
+          Abre primeiro e fica em segundo plano.
+
+      [2] TV  — Terminal de Visualização
+          Tela de exibição pública das senhas chamadas.
+          Exibe a senha em destaque e toca o som a cada chamada.
+
+      [3] TS  — Terminal de Senhas
+          Usado pelo público para gerar senhas Normal (N) ou Prioritária (P).
+
+      [4] TA  — Terminal de Atendimento
+          Usado pelo atendente para chamar a próxima senha da fila.
+          Ao abrir, pede o número do guichê.
+
+
+REGRA DE PRIORIDADE
+-------------------
+  A cada 2 senhas Normais chamadas, a próxima deve ser
+  obrigatoriamente Prioritária (se houver alguma na fila).
+
+
+SOM
+---
+  O arquivo de áudio deve estar na pasta sons/ ou na raiz do projeto.
+  Formatos suportados: .mp3, .wav, .ogg, .flac
+
+  O som toca sempre que:
+    - Uma senha é gerada no TS
+    - Uma senha é chamada no TA
+    - Uma senha aparece no TV
+
+
+ESTRUTURA DO PROJETO
+--------------------
+  servidor/
+    srv.py          Servidor central (iniciar primeiro)
+  clientes/
+    ts.py           Terminal de Senhas
+    ta.py           Terminal de Atendimento
+    tv.py           Terminal de Visualização
+  utils/
+    conexao.py      Configuração de IP e porta
+    audio.py        Módulo de som
+  sons/
+    (coloque aqui o arquivo de áudio)
+  iniciar.py        Launcher — abre tudo de uma vez
+  requirements.txt  Dependências do projeto
+
+================================================================

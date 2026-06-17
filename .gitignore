@@ -1,0 +1,12 @@
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+sons/*.mp3
+sons/*.wav
+sons/*.ogg
+sons/*.flac
+*.mp3
+*.wav
+*.ogg
+*.flac

@@ -1,0 +1,371 @@
+# =============================================================================
+# VERSÃO ORIGINAL — o servidor estava vazio no commit inicial.
+# A lógica foi construída do zero neste projeto:
+#   - Gerenciamento de filas Normal e Prioritária
+#   - Regra de prioridade: a cada 2 senhas Normais, 1 Prioritária obrigatória
+#   - Registro e rastreamento de guichês ativos (TA_CONECTAR)
+#   - Broadcast para todos os Terminais de Visualização (TV)
+#   - Timestamps em cada evento (recebimento e envio de SEAs)
+# =============================================================================
+# VERSÃO ATUAL (GUI com tkinter + lógica de servidor em classe separada)
+# =============================================================================
+
+import tkinter as tk
+import socket
+import threading
+import queue
+import sys
+import os
+from datetime import datetime
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils import conexao
+
+COR_FUNDO  = "#1a1a2e"
+COR_PAINEL = "#16213e"
+COR_LOG    = "#0d0d1a"
+COR_TEXTO  = "#ecf0f1"
+
+
+# ---------------------------------------------------------------------------
+# Lógica central do servidor
+# ---------------------------------------------------------------------------
+
+class ServidorSASE:
+    def __init__(self, log_fn):
+        self._log = log_fn
+
+        self.fila_normal = []
+        self.fila_prioritaria = []
+        self.proximo_N = 1
+        self.proximo_P = 1
+        self.normals_consecutivos = 0
+
+        # Guichês registrados: {id_guiche: socket}
+        self.tas_conectados = {}
+        # TVs conectadas para broadcast
+        self.tvs_conectadas = []
+
+        self.lock = threading.Lock()
+
+    def _proximo_da_fila(self):
+        """Deve ser chamado com self.lock já adquirido."""
+        if self.normals_consecutivos >= 2 and self.fila_prioritaria:
+            sea = self.fila_prioritaria.pop(0)
+            self.normals_consecutivos = 0
+        elif self.fila_normal:
+            sea = self.fila_normal.pop(0)
+            self.normals_consecutivos += 1
+        elif self.fila_prioritaria:
+            sea = self.fila_prioritaria.pop(0)
+            self.normals_consecutivos = 0
+        else:
+            sea = None
+        return sea
+
+    def _broadcast_tvs(self, mensagem, tvs_snapshot):
+        """Envia para todos os TVs da lista. Fora do lock."""
+        desconectadas = []
+        for tv_sock in tvs_snapshot:
+            try:
+                tv_sock.send(mensagem.encode("utf-8"))
+            except Exception:
+                desconectadas.append(tv_sock)
+        if desconectadas:
+            with self.lock:
+                for tv in desconectadas:
+                    if tv in self.tvs_conectadas:
+                        self.tvs_conectadas.remove(tv)
+
+    def _atender_guiche(self, conn, id_guiche):
+        """Processa uma solicitação de senha de um guichê registrado."""
+        with self.lock:
+            sea = self._proximo_da_fila()
+            if sea:
+                resposta = f"Guichê {id_guiche} chama: {sea}"
+                tvs_snapshot = list(self.tvs_conectadas)
+            else:
+                resposta = "Fila vazia. Nenhuma senha aguardando atendimento."
+                tvs_snapshot = []
+
+        try:
+            conn.send(resposta.encode("utf-8"))
+        except Exception:
+            return
+
+        if sea:
+            self._log(f"SEA enviada ao Guichê {id_guiche} e TVs: {sea}", "ta")
+            self._broadcast_tvs(resposta, tvs_snapshot)
+        else:
+            self._log(f"Guichê {id_guiche} solicitou senha — fila vazia.", "aviso")
+
+    def handle_client(self, conn, addr):
+        tipo = None
+        partes = []
+        try:
+            dados = conn.recv(1024).decode("utf-8").strip()
+            partes = dados.split("|")
+            tipo = partes[0]
+
+            # --- Terminal de Senhas ---
+            if tipo == "TS" and len(partes) == 2:
+                comando = partes[1]
+                with self.lock:
+                    if comando == "GERAR_N":
+                        sea = f"N{self.proximo_N}"
+                        self.proximo_N += 1
+                        self.fila_normal.append(sea)
+                        self._log(
+                            f"SEA recebida do TS: {sea}  "
+                            f"[Normal: {len(self.fila_normal)} | Prio: {len(self.fila_prioritaria)}]",
+                            "ts"
+                        )
+                        conn.send(f"Senha gerada com sucesso: {sea}".encode("utf-8"))
+                    elif comando == "GERAR_P":
+                        sea = f"P{self.proximo_P}"
+                        self.proximo_P += 1
+                        self.fila_prioritaria.append(sea)
+                        self._log(
+                            f"SEA recebida do TS: {sea}  "
+                            f"[Normal: {len(self.fila_normal)} | Prio: {len(self.fila_prioritaria)}]",
+                            "ts"
+                        )
+                        conn.send(f"Senha gerada com sucesso: {sea}".encode("utf-8"))
+                    else:
+                        conn.send("Comando inválido.".encode("utf-8"))
+
+            # --- Terminal de Atendimento (conexão permanente) ---
+            elif tipo == "TA_CONECTAR" and len(partes) == 2:
+                id_guiche = partes[1]
+                with self.lock:
+                    self.tas_conectados[id_guiche] = conn
+                self._log(
+                    f"Guichê {id_guiche} registrado  "
+                    f"[Ativos: {sorted(self.tas_conectados.keys())}]", "ta"
+                )
+
+                try:
+                    while True:
+                        dados = conn.recv(1024)
+                        if not dados:
+                            break
+                        req = dados.decode("utf-8").strip()
+                        if req.startswith("TA_SOLICITAR"):
+                            self._atender_guiche(conn, id_guiche)
+                finally:
+                    with self.lock:
+                        if id_guiche in self.tas_conectados:
+                            del self.tas_conectados[id_guiche]
+                    self._log(
+                        f"Guichê {id_guiche} desconectado  "
+                        f"[Ativos: {sorted(self.tas_conectados.keys())}]", "ta"
+                    )
+                return  # conn.close() roda no finally externo
+
+            # --- Terminal de Visualização (conexão permanente) ---
+            elif tipo == "TV":
+                with self.lock:
+                    self.tvs_conectadas.append(conn)
+                self._log(
+                    f"TV conectada: {addr}  [TVs ativas: {len(self.tvs_conectadas)}]", "tv"
+                )
+                try:
+                    while True:
+                        dados = conn.recv(1024)
+                        if not dados:
+                            break
+                finally:
+                    with self.lock:
+                        if conn in self.tvs_conectadas:
+                            self.tvs_conectadas.remove(conn)
+                    self._log(
+                        f"TV desconectada: {addr}  [TVs ativas: {len(self.tvs_conectadas)}]", "tv"
+                    )
+                return
+
+            else:
+                conn.send("Mensagem não reconhecida.".encode("utf-8"))
+
+        except Exception as e:
+            self._log(f"Erro com cliente {addr}: {e}", "erro")
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Interface gráfica
+# ---------------------------------------------------------------------------
+
+class AppServidor:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("SRV — Servidor SASE")
+        self.root.geometry("640x560")
+        self.root.configure(bg=COR_FUNDO)
+        self.root.resizable(True, True)
+        self.root.minsize(500, 420)
+
+        self._fila_ui = queue.Queue()
+        self._build_ui()
+
+        self.servidor = ServidorSASE(log_fn=self._enfileirar_log)
+        threading.Thread(target=self._loop_servidor, daemon=True).start()
+
+        self._poll_queue()
+        self.root.mainloop()
+
+    def _build_ui(self):
+        # --- Cabeçalho ---
+        frame_header = tk.Frame(self.root, bg=COR_PAINEL)
+        frame_header.pack(fill="x")
+
+        tk.Label(
+            frame_header, text="SERVIDOR SASE",
+            bg=COR_PAINEL, fg=COR_TEXTO,
+            font=("Segoe UI", 14, "bold")
+        ).pack(side="left", padx=20, pady=12)
+
+        self.lbl_status = tk.Label(
+            frame_header, text="● Iniciando...",
+            bg=COR_PAINEL, fg="#f39c12",
+            font=("Segoe UI", 9)
+        )
+        self.lbl_status.pack(side="right", padx=20)
+
+        # --- Contadores ---
+        frame_cont = tk.Frame(self.root, bg="#0f3460")
+        frame_cont.pack(fill="x", padx=18, pady=(12, 0))
+
+        self.lbl_fila_n = self._criar_contador(frame_cont, "FILA NORMAL",     "#27ae60")
+        self.lbl_fila_p = self._criar_contador(frame_cont, "FILA PRIORITÁRIA","#e67e22")
+        self.lbl_guiches = self._criar_contador(frame_cont, "GUICHÊS ATIVOS", "#3498db")
+        self.lbl_tvs    = self._criar_contador(frame_cont, "TVs ATIVAS",      "#9b59b6")
+
+        # --- Guichês registrados ---
+        frame_guiches = tk.Frame(self.root, bg="#0f3460")
+        frame_guiches.pack(fill="x", padx=18, pady=(2, 10))
+
+        tk.Label(
+            frame_guiches, text="Guichês:",
+            bg="#0f3460", fg="#7f8c8d",
+            font=("Segoe UI", 8)
+        ).pack(side="left", padx=10, pady=4)
+
+        self.lbl_guiches_lista = tk.Label(
+            frame_guiches, text="nenhum registrado",
+            bg="#0f3460", fg="#3498db",
+            font=("Consolas", 9, "bold")
+        )
+        self.lbl_guiches_lista.pack(side="left", pady=4)
+
+        # --- Log ---
+        tk.Label(
+            self.root, text="LOG DO SERVIDOR",
+            bg=COR_FUNDO, fg="#5d6d7e",
+            font=("Segoe UI", 8, "bold")
+        ).pack(anchor="w", padx=20)
+
+        self.txt_log = tk.Text(
+            self.root,
+            bg=COR_LOG, fg=COR_TEXTO,
+            font=("Consolas", 9),
+            state="disabled",
+            relief="flat", bd=0,
+            wrap="word",
+            highlightthickness=0
+        )
+        self.txt_log.pack(padx=18, pady=(2, 18), fill="both", expand=True)
+
+        self.txt_log.tag_config("hora",    foreground="#44475a")
+        self.txt_log.tag_config("ts",      foreground="#2ecc71")
+        self.txt_log.tag_config("ta",      foreground="#3498db")
+        self.txt_log.tag_config("tv",      foreground="#9b59b6")
+        self.txt_log.tag_config("aviso",   foreground="#f39c12")
+        self.txt_log.tag_config("erro",    foreground="#e74c3c")
+        self.txt_log.tag_config("sistema", foreground="#7f8c8d")
+
+    def _criar_contador(self, parent, titulo, cor):
+        frame = tk.Frame(parent, bg="#0f3460")
+        frame.pack(side="left", expand=True, fill="both", padx=6, pady=6)
+        tk.Label(
+            frame, text=titulo,
+            bg="#0f3460", fg="#7f8c8d",
+            font=("Segoe UI", 7, "bold")
+        ).pack(pady=(6, 0))
+        lbl = tk.Label(
+            frame, text="0",
+            bg="#0f3460", fg=cor,
+            font=("Consolas", 26, "bold")
+        )
+        lbl.pack(pady=(0, 6))
+        return lbl
+
+    def _enfileirar_log(self, mensagem, tag="sistema"):
+        hora = datetime.now().strftime("%H:%M:%S")
+        self._fila_ui.put(("log", hora, mensagem, tag))
+
+    def _poll_queue(self):
+        while not self._fila_ui.empty():
+            evento = self._fila_ui.get()
+
+            if evento[0] == "log":
+                _, hora, msg, tag = evento
+                self.txt_log.config(state="normal")
+                self.txt_log.insert("end", f"[{hora}] ", "hora")
+                self.txt_log.insert("end", f"{msg}\n", tag)
+                self.txt_log.see("end")
+                self.txt_log.config(state="disabled")
+
+            elif evento[0] == "status":
+                _, texto, cor = evento
+                self.lbl_status.config(text=texto, fg=cor)
+
+        # Atualiza contadores e lista de guichês
+        if hasattr(self, "servidor"):
+            with self.servidor.lock:
+                fn      = len(self.servidor.fila_normal)
+                fp      = len(self.servidor.fila_prioritaria)
+                tvs     = len(self.servidor.tvs_conectadas)
+                guiches = sorted(self.servidor.tas_conectados.keys())
+
+            self.lbl_fila_n.config(text=str(fn))
+            self.lbl_fila_p.config(text=str(fp))
+            self.lbl_tvs.config(text=str(tvs))
+            self.lbl_guiches.config(text=str(len(guiches)))
+
+            if guiches:
+                texto = "  ".join(f"Guichê {g}" for g in guiches)
+            else:
+                texto = "nenhum registrado"
+            self.lbl_guiches_lista.config(text=texto)
+
+        self.root.after(300, self._poll_queue)
+
+    def _loop_servidor(self):
+        try:
+            srv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv_socket.bind((conexao.HOST, conexao.PORTA_SRV))
+            srv_socket.listen(10)
+
+            self._fila_ui.put(("status", f"● Online  —  {conexao.HOST}:{conexao.PORTA_SRV}", "#2ecc71"))
+            self._enfileirar_log(f"Servidor iniciado em {conexao.HOST}:{conexao.PORTA_SRV}", "sistema")
+            self._enfileirar_log("Aguardando conexões de TS, TA e TV...", "sistema")
+
+            while True:
+                conn, addr = srv_socket.accept()
+                threading.Thread(
+                    target=self.servidor.handle_client,
+                    args=(conn, addr),
+                    daemon=True
+                ).start()
+
+        except OSError as e:
+            self._fila_ui.put(("status", f"● Erro: {e}", "#e74c3c"))
+            self._enfileirar_log(f"Erro ao iniciar: {e}", "erro")
+        except Exception as e:
+            self._enfileirar_log(f"Erro inesperado: {e}", "erro")
+
+
+if __name__ == "__main__":
+    AppServidor()

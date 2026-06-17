@@ -69,16 +69,43 @@ COR_TEXTO    = "#ecf0f1"
 COR_SUBTEXTO = "#7f8c8d"
 
 _PIADAS = [
-    "Por que o programador usa oculos?\nPorque nao consegue C# (C-sharp = ver afiado).",
-    "Um programador foi ao mercado.\nEsposa: 'Compre leite. Se tiver ovos, traga uma duzia.'\nVoltou com 12 litros de leite.",
-    "O que o zero disse pro oito?\nBelo cinto!",
-    "Qual e o animal favorito do programador?\nO bug. Aparece quando menos se espera.",
-    "Por que o Python e bom para iniciantes?\nPorque nao tem chaves para perder.",
-    "Por que o programador foi ao medico?\nPorque ficava levantando exceptions.",
-    "Por que o if foi ao medico?\nEstava sem condicoes.",
-    "Qual e a musica favorita do programador?\nWhile My Guitar Gently Loops.",
-    "Por que o Java virou cafe?\nPorque ficava travando a maquina.",
-    "Um SQL entra num bar e pergunta: 'Posso me sentar?'\nO barman diz: 'Pode, mas com JOIN condicoes.'"
+    "Por que C recebe todas as meninas e Java nao?\nPorque C nao as trata como objetos.",
+
+    "Dois programadores falam sobre vida social.\nUm diz: 'A unica data que recebo e o Java Update.'",
+
+    "Um aluno tenta olhar por baixo da camisa de uma colega.\nEla: 'Ei! O que voce esta fazendo?'\nEle: 'Membros da mesma classe podem acessar a area privada!'",
+
+    "Uma senhora ve um programador fumando e diz:\n'Voce nao deveria fumar, veja o aviso na caixa!'\nEle responde: 'Eu sou programador Java.\nNao nos preocupamos com avisos, apenas com erros.'",
+
+    "Por que os desenvolvedores Java usam oculos?\nPorque eles nao C#!",
+
+    "Eu tive um problema. Usei Java para resolve-lo.\nAgora eu tenho um ProblemFactory.",
+
+    "Quantos programadores sao necessarios para trocar uma lampada?\nZero. Esse e um problema de hardware.",
+
+    "Qual e a maneira orientada a objetos para se tornar rico?\nHeranca.",
+
+    "Programadores C nunca morrem.\nEles sao apenas colocados em VOID.",
+
+    "O que e um programador?\nUm organismo que transforma cafeina e fast food em software.",
+
+    "Um otimista diz: 'O copo esta meio cheio.'\nUm pessimista diz: 'O copo esta meio vazio.'\nUm programador diz: 'O copo e duas vezes maior que o necessario!'",
+
+    "Por que o programador deixou o emprego?\nEle nunca conseguiu arrays.",
+
+    "Programacao e como sexo.\nUm erro e voce deve dar suporte pelo resto da sua vida.",
+
+    "O que e um algoritmo?\nA palavra que programadores usam quando nao querem\nexplicar o que fizeram.",
+
+    "O que e hardware?\nUma parte do computador que voce pode chutar.",
+
+    "Uma consulta SQL entra em um bar, se aproxima de duas tabelas e pergunta:\n'Posso me juntar a voces?'",
+
+    "Um programador ve escrito na parede: 'Enquanto ha esperanca, ha vida.'\nEle edita e escreve: 'Enquanto houver codigo, ha bug.'",
+
+    "Java, Python, C++ e C estao em uma reuniao.\nJava: 'Como fazer as mulheres se interessarem por nos?'\nC++: 'Talvez mais excecoes?'\nPython: 'Devemos definir melhor nossos metodos?'\nC: 'Talvez parar de trata-las como objetos?'",
+
+    "Knock knock.\nQuem esta ai?\nJava!\n... ainda carregando.",
 ]
 
 _NOMES_TRISTES = [

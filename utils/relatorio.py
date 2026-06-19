@@ -76,23 +76,24 @@ def gerar_txt(titulo, historico, com_guiche=True, extras=None):
         linhas.append("   Nenhum atendimento registrado.")
     else:
         if com_guiche:
-            linhas.append("  {:<4} {:<8} {:<14} {:<8} {:<10} INTERVALO".format(
-                "#", "SENHA", "TIPO", "GUICHE", "HORARIO"))
+            linhas.append("  {:<4} {:<8} {:<24} {:<14} {:<8} {:<10} INTERVALO".format(
+                "#", "SENHA", "NOME", "TIPO", "GUICHE", "HORARIO"))
         else:
-            linhas.append("  {:<4} {:<8} {:<14} {:<10} INTERVALO".format(
-                "#", "SENHA", "TIPO", "HORARIO"))
-        linhas.append("  " + "-" * 56)
+            linhas.append("  {:<4} {:<8} {:<24} {:<14} {:<10} INTERVALO".format(
+                "#", "SENHA", "NOME", "TIPO", "HORARIO"))
+        linhas.append("  " + "-" * 72)
 
         anterior = None
         for h in historico:
             iv = _intervalo(h, anterior)
+            nome_val = h.get("nome", "")
             if com_guiche:
-                linhas.append("  {:<4} {:<8} {:<14} {:<8} {:<10} {}".format(
-                    h["ordem"], h["senha"], h["tipo"],
+                linhas.append("  {:<4} {:<8} {:<24} {:<14} {:<8} {:<10} {}".format(
+                    h["ordem"], h["senha"], nome_val[:23], h["tipo"],
                     "G{}".format(h["guiche"]), h["hora"].strftime("%H:%M:%S"), iv))
             else:
-                linhas.append("  {:<4} {:<8} {:<14} {:<10} {}".format(
-                    h["ordem"], h["senha"], h["tipo"],
+                linhas.append("  {:<4} {:<8} {:<24} {:<14} {:<10} {}".format(
+                    h["ordem"], h["senha"], nome_val[:23], h["tipo"],
                     h["hora"].strftime("%H:%M:%S"), iv))
             anterior = h
 
@@ -193,11 +194,11 @@ def gerar_pdf(caminho, titulo, historico, log_texto=None, com_guiche=True, extra
         pdf.cell(0, 8, "Nenhum atendimento registrado.", ln=True)
     else:
         if com_guiche:
-            cols   = ["#", "Senha", "Tipo", "Guiche", "Horario", "Intervalo"]
-            widths = [12, 20, 32, 26, 26, 74]
+            cols   = ["#", "Senha", "Nome", "Tipo", "Guiche", "Horario", "Intervalo"]
+            widths = [10, 18, 46, 28, 24, 22, 42]
         else:
-            cols   = ["#", "Senha", "Tipo", "Horario", "Intervalo"]
-            widths = [12, 20, 32, 26, 102]
+            cols   = ["#", "Senha", "Nome", "Tipo", "Horario", "Intervalo"]
+            widths = [10, 18, 50, 28, 22, 62]
 
         # Cabeçalho da tabela
         pdf.set_fill_color(15, 52, 96)
@@ -211,14 +212,15 @@ def gerar_pdf(caminho, titulo, historico, log_texto=None, com_guiche=True, extra
         anterior, alt = None, False
         for h in historico:
             iv = _intervalo(h, anterior)
+            nome_val = _safe(h.get("nome", ""))
             pdf.set_fill_color(245, 247, 255) if alt else pdf.set_fill_color(255, 255, 255)
             pdf.set_text_color(0, 0, 0)
             if com_guiche:
-                vals = [str(h["ordem"]), h["senha"], h["tipo"],
+                vals = [str(h["ordem"]), h["senha"], nome_val, h["tipo"],
                         "Guiche {}".format(h["guiche"]),
                         h["hora"].strftime("%H:%M:%S"), iv]
             else:
-                vals = [str(h["ordem"]), h["senha"], h["tipo"],
+                vals = [str(h["ordem"]), h["senha"], nome_val, h["tipo"],
                         h["hora"].strftime("%H:%M:%S"), iv]
             for val, w in zip(vals, widths):
                 pdf.cell(w, 7, _safe(val), border=1, fill=True)

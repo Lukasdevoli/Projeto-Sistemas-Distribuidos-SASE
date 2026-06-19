@@ -19,8 +19,48 @@ import sys
 import os
 from datetime import datetime
 
+import random
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import conexao, relatorio
+
+# 100 maiores brasileiros de todos os tempos (SBT/BBC, 2012)
+NOMES = [
+    "Ayrton Senna", "Chico Xavier", "Fernando Henrique Cardoso",
+    "Getúlio Vargas", "Irmã Dulce", "Juscelino Kubitschek",
+    "Lula", "Oscar Niemeyer", "Pelé", "Princesa Isabel",
+    "Alberto Santos Dumont", "Tiradentes",
+    "Edir Macedo", "Chico Anysio", "Ronaldo Fenômeno",
+    "Dercy Gonçalves", "Zilda Arns", "Roberto Carlos",
+    "José Alencar", "Neymar", "Eike Batista",
+    "Ruy Barbosa", "Frei Galvão", "Manuel Jacinto Coelho",
+    "Oswaldo Cruz", "Silas Malafaia", "Dom Pedro II",
+    "Chico Mendes", "Luiz Gonzaga", "Renato Russo",
+    "Betinho", "Pe. Cícero Batista", "Dilma Rousseff",
+    "Tancredo Neves", "Luciano Huck", "Valdemiro Santiago",
+    "Hélder Câmara", "Renato Aragão", "Rodrigo Faro",
+    "Xuxa Meneghel", "Machado de Assis", "Luan Santana",
+    "Ivete Sangalo", "Elis Regina", "Visconde de Mauá",
+    "Raul Seixas", "Leonel Brizola", "Tiririca",
+    "Gugu Liberato", "Rogério Ceni", "Paiva Netto",
+    "Carlos Drummond", "Zumbi dos Palmares", "RR Soares",
+    "Paulo Freire", "Hebe Camargo", "Monteiro Lobato",
+    "Roberto Marinho", "Marcos Palmeiras", "Pe. Marcelo Rossi",
+    "Zico", "Amácio Mazzaropi", "Dedé",
+    "Ulysses Guimarães", "Reynaldo Gianecchini", "Carlos Chagas",
+    "Jonas Abib", "Duque de Caxias", "Ermírio de Moraes",
+    "Cândido Rondon", "Lua Blanco", "Michel Teló",
+    "Garrincha", "Lampião", "Claudia Leitte",
+    "Luís Carlos Prestes", "Marcos Pontes", "Fernando Collor",
+    "José Serra", "Sócrates", "José Luiz Datena",
+    "Ronaldinho Gaúcho", "Joelma", "Chico Buarque",
+    "Chacrinha", "Amado Batista", "William Bonner",
+    "Cazuza", "Tom Jobim", "Anderson Silva",
+    "Pe. Landell de Moura", "Romário", "Jorge Amado",
+    "Ronald Golias", "Itamar Franco", "Roberto Justus",
+    "Ana Paula Valadão", "Vital Brazil", "Jô Soares",
+    "Maria da Penha",
+]
 
 COR_FUNDO  = "#1a1a2e"
 COR_PAINEL = "#16213e"
@@ -116,9 +156,12 @@ class ServidorSASE:
         self.proximo_P = 1
         self.normals_consecutivos = 0
 
-        # Histórico de atendimentos: [{ordem, senha, tipo, guiche, hora}]
+        # Histórico de atendimentos: [{ordem, senha, nome, tipo, guiche, hora}]
         self.historico_atendimentos = []
         self._contador_ordem = 0
+
+        # Mapa senha → nome associado (atribuído na geração)
+        self._nomes = {}
 
         # Guichês registrados: {id_guiche: socket}
         self.tas_conectados = {}
@@ -128,16 +171,23 @@ class ServidorSASE:
         self.lock = threading.Lock()
 
     def _proximo_da_fila(self):
-        """Deve ser chamado com self.lock já adquirido."""
-        if self.normals_consecutivos >= 2 and self.fila_prioritaria:
+        """
+        Deve ser chamado com self.lock já adquirido.
+
+        Regra (spec): 'Para cada duas SEAs do tipo N informadas, a próxima
+        deverá ser obrigatoriamente do tipo P, se houver.'
+
+        Implementação: Prioritária tem precedência absoluta sobre Normal.
+        Enquanto houver P na fila, P é servida ANTES de qualquer N — assim
+        a regra das 2N é satisfeita por construção (P jamais espera Normais).
+        Quando a fila P está vazia, N é servida normalmente.
+        """
+        if self.fila_prioritaria:
             sea = self.fila_prioritaria.pop(0)
             self.normals_consecutivos = 0
         elif self.fila_normal:
             sea = self.fila_normal.pop(0)
             self.normals_consecutivos += 1
-        elif self.fila_prioritaria:
-            sea = self.fila_prioritaria.pop(0)
-            self.normals_consecutivos = 0
         else:
             sea = None
         return sea
@@ -161,15 +211,17 @@ class ServidorSASE:
         with self.lock:
             sea = self._proximo_da_fila()
             if sea:
+                nome = self._nomes.pop(sea, "")
                 self._contador_ordem += 1
                 self.historico_atendimentos.append({
                     "ordem":  self._contador_ordem,
                     "senha":  sea,
+                    "nome":   nome,
                     "tipo":   "Prioritario" if sea.startswith("P") else "Normal",
                     "guiche": id_guiche,
                     "hora":   datetime.now(),
                 })
-                resposta = f"Guichê {id_guiche} chama: {sea}"
+                resposta = f"Guichê {id_guiche} chama: {sea} — {nome}" if nome else f"Guichê {id_guiche} chama: {sea}"
                 tvs_snapshot = list(self.tvs_conectadas)
             else:
                 resposta = "Fila vazia. Nenhuma senha aguardando atendimento."
@@ -201,23 +253,27 @@ class ServidorSASE:
                     if comando == "GERAR_N":
                         sea = f"N{self.proximo_N}"
                         self.proximo_N += 1
+                        nome = random.choice(NOMES)
+                        self._nomes[sea] = nome
                         self.fila_normal.append(sea)
                         self._log(
-                            f"SEA recebida do TS: {sea}  "
+                            f"SEA recebida do TS: {sea} — {nome}  "
                             f"[Normal: {len(self.fila_normal)} | Prio: {len(self.fila_prioritaria)}]",
                             "ts"
                         )
-                        conn.send(f"Senha gerada com sucesso: {sea}".encode("utf-8"))
+                        conn.send(f"Senha gerada: {sea} — {nome}".encode("utf-8"))
                     elif comando == "GERAR_P":
                         sea = f"P{self.proximo_P}"
                         self.proximo_P += 1
+                        nome = random.choice(NOMES)
+                        self._nomes[sea] = nome
                         self.fila_prioritaria.append(sea)
                         self._log(
-                            f"SEA recebida do TS: {sea}  "
+                            f"SEA recebida do TS: {sea} — {nome}  "
                             f"[Normal: {len(self.fila_normal)} | Prio: {len(self.fila_prioritaria)}]",
                             "ts"
                         )
-                        conn.send(f"Senha gerada com sucesso: {sea}".encode("utf-8"))
+                        conn.send(f"Senha gerada: {sea} — {nome}".encode("utf-8"))
                     else:
                         conn.send("Comando inválido.".encode("utf-8"))
 

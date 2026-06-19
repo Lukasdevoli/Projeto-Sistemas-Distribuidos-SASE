@@ -158,6 +158,8 @@ def _pip(pacote):
     except subprocess.TimeoutExpired:
         return False, "pip demorou mais de 3 minutos."
     except Exception as e:
+
+        
         return False, str(e)
 
 

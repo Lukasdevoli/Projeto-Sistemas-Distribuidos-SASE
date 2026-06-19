@@ -368,7 +368,6 @@ class AppTerminalSenhas:
                 self.lbl_senha.config(text=senha, fg=cor)
                 self.lbl_status.config(text=resposta, fg="#ecf0f1")
                 self._set_led(True)
-                audio.tocar()
             else:
                 self.lbl_status.config(text=evento[1], fg="#e74c3c")
                 self._set_led(False)

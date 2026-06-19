@@ -98,14 +98,22 @@ class AppTerminalAtendimento:
         self.root = tk.Tk()
         self.root.withdraw()
 
-        id_guiche = simpledialog.askstring(
-            "Terminal de Atendimento",
-            "Digite o numero deste guiche (ex: 1, 2, 3):",
-            parent=self.root
-        )
-        if not id_guiche or not id_guiche.strip():
-            _piada_terminal()
-            id_guiche = random.choice(_NOMES_TRISTES)
+        # Aceita --guiche=X passado pelo SRV ao lançar instâncias automaticamente
+        id_guiche = None
+        for arg in sys.argv[1:]:
+            if arg.startswith("--guiche="):
+                id_guiche = arg.split("=", 1)[1].strip()
+                break
+
+        if not id_guiche:
+            id_guiche = simpledialog.askstring(
+                "Terminal de Atendimento",
+                "Digite o numero deste guiche (ex: 1, 2, 3):",
+                parent=self.root
+            )
+            if not id_guiche or not id_guiche.strip():
+                _piada_terminal()
+                id_guiche = random.choice(_NOMES_TRISTES)
 
         self.id_guiche     = id_guiche.strip()
         self._socket       = None

@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox
 import socket
 import threading
 import queue
+import subprocess
 import sys
 import os
 from datetime import datetime
@@ -172,22 +173,24 @@ class ServidorSASE:
 
     def _proximo_da_fila(self):
         """
-        Deve ser chamado com self.lock já adquirido.
+        Spec (Projeto_SD.pdf, seção 2.1 item 4c):
+        'Para cada duas SEAs do tipo N informadas, a próxima SEA deverá ser
+        obrigatoriamente do tipo P, se houver.'
 
-        Regra (spec): 'Para cada duas SEAs do tipo N informadas, a próxima
-        deverá ser obrigatoriamente do tipo P, se houver.'
-
-        Implementação: Prioritária tem precedência absoluta sobre Normal.
-        Enquanto houver P na fila, P é servida ANTES de qualquer N — assim
-        a regra das 2N é satisfeita por construção (P jamais espera Normais).
-        Quando a fila P está vazia, N é servida normalmente.
+        Padrão: N, N, P, N, N, P, ...
+        - Após 2 Normais consecutivos → força Prioritária (se houver)
+        - Sem P disponível → continua com N normalmente
+        - Sem N disponível → serve P diretamente
         """
-        if self.fila_prioritaria:
+        if self.normals_consecutivos >= 2 and self.fila_prioritaria:
             sea = self.fila_prioritaria.pop(0)
             self.normals_consecutivos = 0
         elif self.fila_normal:
             sea = self.fila_normal.pop(0)
             self.normals_consecutivos += 1
+        elif self.fila_prioritaria:
+            sea = self.fila_prioritaria.pop(0)
+            self.normals_consecutivos = 0
         else:
             sea = None
         return sea
@@ -349,6 +352,8 @@ class AppServidor:
         self.root.minsize(500, 440)
 
         self._fila_ui = queue.Queue()
+        self._ts_lancados = 0
+        self._ta_lancados = 0
         self._build_ui()
 
         self.servidor = ServidorSASE(log_fn=self._enfileirar_log)
@@ -386,9 +391,34 @@ class AppServidor:
         )
         self.lbl_status.pack(side="right", padx=8)
 
+        # --- Lançador de módulos ---
+        frame_modulos = tk.Frame(self.root, bg="#0d1b2e")
+        frame_modulos.pack(fill="x", padx=18, pady=(8, 0))
+
+        tk.Label(
+            frame_modulos, text="MÓDULOS:",
+            bg="#0d1b2e", fg="#5d6d7e",
+            font=("Segoe UI", 8, "bold")
+        ).pack(side="left", padx=(10, 12), pady=8)
+
+        for txt, cor, cor_hover, cmd in [
+            ("▶  Nova TV", "#4a1568", "#6c3483", self._lancar_tv),
+            ("▶  Novo TS", "#0d3a1a", "#1e8449", self._lancar_ts),
+            ("▶  Novo TA", "#0d2a40", "#1a5276", self._lancar_ta),
+        ]:
+            tk.Button(
+                frame_modulos, text=txt,
+                bg=cor, fg="white",
+                font=("Segoe UI", 9, "bold"),
+                relief="flat", cursor="hand2",
+                padx=14, pady=5,
+                command=cmd,
+                activebackground=cor_hover, activeforeground="white",
+            ).pack(side="left", padx=4, pady=8)
+
         # --- Contadores ---
         frame_cont = tk.Frame(self.root, bg="#0f3460")
-        frame_cont.pack(fill="x", padx=18, pady=(12, 0))
+        frame_cont.pack(fill="x", padx=18, pady=(6, 0))
 
         self.lbl_fila_n  = self._criar_contador(frame_cont, "FILA NORMAL",      "#27ae60")
         self.lbl_fila_p  = self._criar_contador(frame_cont, "FILA PRIORITARIA", "#e67e22")
@@ -453,6 +483,29 @@ class AppServidor:
         )
         lbl.pack(pady=(0, 6))
         return lbl
+
+    def _lancar_tv(self):
+        tv_path = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'clientes', 'tv.py')
+        )
+        subprocess.Popen([sys.executable, tv_path])
+        self._enfileirar_log("Nova TV iniciada.", "tv")
+
+    def _lancar_ts(self):
+        ts_path = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'clientes', 'ts.py')
+        )
+        self._ts_lancados += 1
+        subprocess.Popen([sys.executable, ts_path])
+        self._enfileirar_log(f"Novo TS iniciado (total lançados: {self._ts_lancados}).", "ts")
+
+    def _lancar_ta(self):
+        ta_path = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'clientes', 'ta.py')
+        )
+        self._ta_lancados += 1
+        subprocess.Popen([sys.executable, ta_path, f'--guiche={self._ta_lancados}'])
+        self._enfileirar_log(f"Novo TA iniciado — Guichê {self._ta_lancados}.", "ta")
 
     def _abrir_relatorio(self):
         with self.servidor.lock:

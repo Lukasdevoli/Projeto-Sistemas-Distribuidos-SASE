@@ -34,6 +34,8 @@ HIST_OFF  = "#1a1800"
 HIST_ON   = "#886600"
 NOME_ON   = "#cc8800"    # âmbar médio para o nome do paciente
 NOME_OFF  = "#0d0a00"    # nome apagado (ocioso)
+GUICHE_ON  = "#00e5ff"   # ciano para o guichê em atendimento
+GUICHE_OFF = "#001a1f"   # guichê apagado
 CTRL_BG   = "#2a2a2a"
 MARCA     = "#484848"
 
@@ -46,15 +48,17 @@ class AppTerminalVisualizacao:
         self.root.configure(bg=PAREDE)
         self.root.resizable(False, False)
 
-        self._fila_ui    = queue.Queue()
-        self._historico  = []
-        self._cor_atual  = DIGIT_OFF
-        self._nome_atual = ""       # nome associado à senha em exibição
+        self._fila_ui      = queue.Queue()
+        self._historico    = []
+        self._cor_atual    = DIGIT_OFF
+        self._nome_atual   = ""
+        self._guiche_atual = ""
 
         self._build_ui()
         self._poll_queue()
         self._tick_hora()
         self._agendar_glitch()
+        audio.tocar_inicio()
         self._conectar()
         self.root.mainloop()
 
@@ -110,10 +114,15 @@ class AppTerminalVisualizacao:
                                      bg=TELA_BG, fg=DIGIT_OFF, font=("Consolas", 88, "bold"))
         self.lbl_chamada.pack(expand=True)
 
+        self.lbl_guiche = tk.Label(self.frame_exibe, text="",
+                                    bg=TELA_BG, fg=GUICHE_OFF,
+                                    font=("Consolas", 26, "bold"))
+        self.lbl_guiche.pack(pady=(0, 2))
+
         self.lbl_nome = tk.Label(self.frame_exibe, text="",
                                   bg=TELA_BG, fg=NOME_OFF,
-                                  font=("Consolas", 24, "bold"))
-        self.lbl_nome.pack(pady=(0, 10))
+                                  font=("Consolas", 20, "bold"))
+        self.lbl_nome.pack(pady=(0, 12))
 
         self.lbl_detalhe = tk.Label(self.frame_main, text="AGUARDANDO CHAMADAS...",
                                      bg=TELA_BG, fg=TEXT_OFF, font=("Consolas", 12))
@@ -185,14 +194,16 @@ class AppTerminalVisualizacao:
             tipo = random.randint(0, 4)
 
             _tela = (self.frame_tela, self.frame_main, self.frame_exibe,
-                     self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe, self.lbl_nome)
+                     self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe,
+                     self.lbl_nome, self.lbl_guiche)
 
             if tipo == 0:
                 # APAGÃO completo: tela fica preta por 50–140 ms
                 bg = "#010101"
                 for w in _tela:
                     self._s(w, bg=bg)
-                for w in (self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe, self.lbl_nome):
+                for w in (self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe,
+                           self.lbl_nome, self.lbl_guiche):
                     self._s(w, fg=bg)
                 self.root.after(random.randint(50, 140), self._restaurar)
 
@@ -202,20 +213,23 @@ class AppTerminalVisualizacao:
                 for w in _tela:
                     self._s(w, bg=bg)
                 self._s(self.lbl_chamada, fg="#ffdc73" if self._cor_atual == DIGIT_ON else "#2e2000")
-                self._s(self.lbl_nome,    fg="#aa6600" if self._nome_atual else "#1a1000")
+                self._s(self.lbl_nome,    fg="#aa6600" if self._nome_atual   else "#1a1000")
+                self._s(self.lbl_guiche,  fg="#006666" if self._guiche_atual else "#001f1f")
                 self._s(self.lbl_titulo,  fg="#aa6600")
                 self._s(self.lbl_detalhe, fg="#aa6600")
                 self.root.after(random.randint(30, 90), self._restaurar)
 
             elif tipo == 2:
-                # COR ERRADA: dígito + nome viram âmbar dessaturado
+                # COR ERRADA: dígito + guichê + nome viram cores trocadas
                 self._s(self.lbl_chamada, fg="#7a5800" if self._cor_atual == DIGIT_OFF else "#cc8800")
-                self._s(self.lbl_nome,    fg="#3d2800" if not self._nome_atual else "#886600")
+                self._s(self.lbl_nome,    fg="#3d2800" if not self._nome_atual   else "#886600")
+                self._s(self.lbl_guiche,  fg="#003333" if not self._guiche_atual else "#007777")
                 self._s(self.lbl_titulo,  fg="#3d2800")
                 dur = random.randint(50, 130)
                 self.root.after(dur, lambda: [
                     self._s(self.lbl_chamada, fg=self._cor_atual),
-                    self._s(self.lbl_nome,    fg=NOME_ON if self._nome_atual else NOME_OFF),
+                    self._s(self.lbl_nome,    fg=NOME_ON   if self._nome_atual   else NOME_OFF),
+                    self._s(self.lbl_guiche,  fg=GUICHE_ON if self._guiche_atual else GUICHE_OFF),
                     self._s(self.lbl_titulo,  fg=TEXT_ON if self._cor_atual == DIGIT_ON else TEXT_OFF),
                 ])
 
@@ -226,10 +240,11 @@ class AppTerminalVisualizacao:
                 def _flip(on):
                     b = bg1 if on else TELA_BG
                     for w in (self.frame_main, self.frame_exibe, self.lbl_chamada,
-                               self.lbl_nome, self.lbl_titulo, self.lbl_detalhe):
+                               self.lbl_guiche, self.lbl_nome, self.lbl_titulo, self.lbl_detalhe):
                         self._s(w, bg=b)
                     self._s(self.lbl_chamada, fg=TELA_BG if on else self._cor_atual)
-                    self._s(self.lbl_nome,    fg=TELA_BG if on else (NOME_ON if self._nome_atual else NOME_OFF))
+                    self._s(self.lbl_nome,    fg=TELA_BG if on else (NOME_ON   if self._nome_atual   else NOME_OFF))
+                    self._s(self.lbl_guiche,  fg=TELA_BG if on else (GUICHE_ON if self._guiche_atual else GUICHE_OFF))
 
                 _flip(True)
                 self.root.after(40,  lambda: _flip(False))
@@ -237,15 +252,17 @@ class AppTerminalVisualizacao:
                 self.root.after(120, lambda: _flip(False))
 
             else:
-                # LINHAS FANTASMA: header pisca + dígito muda cor por 60–180 ms
+                # LINHAS FANTASMA: header pisca + dígito + guichê mudam cor por 60–180 ms
                 self._s(self.lbl_hora,    fg="#553300")
                 self._s(self.lbl_chamada, fg="#3d2800" if self._cor_atual == DIGIT_OFF else "#ffe066")
-                self._s(self.lbl_nome,    fg="#1a1000" if not self._nome_atual else "#664400")
+                self._s(self.lbl_nome,    fg="#1a1000" if not self._nome_atual   else "#664400")
+                self._s(self.lbl_guiche,  fg="#001010" if not self._guiche_atual else "#004444")
                 dur = random.randint(60, 180)
                 self.root.after(dur, lambda: [
                     self._s(self.lbl_hora,    fg=SEPAR),
                     self._s(self.lbl_chamada, fg=self._cor_atual),
-                    self._s(self.lbl_nome,    fg=NOME_ON if self._nome_atual else NOME_OFF),
+                    self._s(self.lbl_nome,    fg=NOME_ON   if self._nome_atual   else NOME_OFF),
+                    self._s(self.lbl_guiche,  fg=GUICHE_ON if self._guiche_atual else GUICHE_OFF),
                 ])
 
         except tk.TclError:
@@ -256,13 +273,15 @@ class AppTerminalVisualizacao:
     def _restaurar(self):
         try:
             for w in (self.frame_tela, self.frame_main, self.frame_exibe,
-                       self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe, self.lbl_nome):
+                       self.lbl_chamada, self.lbl_titulo, self.lbl_detalhe,
+                       self.lbl_nome, self.lbl_guiche):
                 self._s(w, bg=TELA_BG)
             self._s(self.lbl_chamada, fg=self._cor_atual)
             txt = TEXT_ON if self._cor_atual == DIGIT_ON else TEXT_OFF
             self._s(self.lbl_titulo,  fg=txt)
             self._s(self.lbl_detalhe, fg=txt)
-            self._s(self.lbl_nome,    fg=NOME_ON if self._nome_atual else NOME_OFF)
+            self._s(self.lbl_nome,    fg=NOME_ON   if self._nome_atual   else NOME_OFF)
+            self._s(self.lbl_guiche,  fg=GUICHE_ON if self._guiche_atual else GUICHE_OFF)
         except tk.TclError:
             pass
 
@@ -309,6 +328,13 @@ class AppTerminalVisualizacao:
             elif ev[0] == "chamada":
                 msg = ev[1]
                 # formato: "Guichê X chama: N1 — Nome Aqui"
+                # extrai guichê
+                guiche = ""
+                if " chama:" in msg:
+                    pre = msg.split(" chama:")[0]
+                    tokens = pre.split()
+                    guiche = tokens[-1] if tokens else ""
+
                 parte = msg.split(": ", 1)[-1] if ": " in msg else msg
                 if " — " in parte:
                     senha, nome = parte.split(" — ", 1)
@@ -317,16 +343,23 @@ class AppTerminalVisualizacao:
                 else:
                     senha = parte.strip()
                     nome  = ""
-                self._cor_atual  = DIGIT_ON
-                self._nome_atual = nome
+
+                self._cor_atual    = DIGIT_ON
+                self._nome_atual   = nome
+                self._guiche_atual = guiche
+
                 self.lbl_chamada.config(text=senha, fg=DIGIT_ON)
+                self.lbl_guiche.config(
+                    text=f"► DIRIJA-SE AO  GUICHÊ  {guiche}" if guiche else "",
+                    fg=GUICHE_ON if guiche else GUICHE_OFF
+                )
                 self.lbl_nome.config(text=nome.upper(), fg=NOME_ON if nome else NOME_OFF)
                 self.lbl_titulo.config(fg=TEXT_ON)
                 self.lbl_detalhe.config(text=msg.upper(), fg=TEXT_ON)
-                self._historico.insert(0, senha)
+                self._historico.insert(0, f"{senha}→G{guiche}" if guiche else senha)
                 self._historico = self._historico[:6]
                 self.lbl_hist.config(text="   ·   ".join(self._historico), fg=HIST_ON)
-                audio.tocar()
+                audio.tocar(nome=nome, guiche=guiche)
                 self._flash()
         try:
             self.root.after(100, self._poll_queue)
@@ -335,15 +368,16 @@ class AppTerminalVisualizacao:
 
     def _flash(self, n=0):
         try:
+            _ws = (self.frame_main, self.frame_exibe,
+                   self.lbl_titulo, self.lbl_chamada,
+                   self.lbl_guiche, self.lbl_nome, self.lbl_detalhe)
             if n < 6:
                 cor = "#100c00" if n % 2 == 0 else TELA_BG
-                for w in (self.frame_main, self.frame_exibe,
-                           self.lbl_titulo, self.lbl_chamada, self.lbl_nome, self.lbl_detalhe):
+                for w in _ws:
                     w.configure(bg=cor)
                 self.root.after(130, lambda: self._flash(n + 1))
             else:
-                for w in (self.frame_main, self.frame_exibe,
-                           self.lbl_titulo, self.lbl_chamada, self.lbl_nome, self.lbl_detalhe):
+                for w in _ws:
                     w.configure(bg=TELA_BG)
         except tk.TclError:
             pass

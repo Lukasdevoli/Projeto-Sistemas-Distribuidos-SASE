@@ -1,29 +1,77 @@
-import subprocess
 import sys
 import os
+
+# =============================================================================
+# Bootstrap de venv — DEVE ser o primeiro código executado.
+# No Linux: cria a venv SASE e re-executa este script dentro dela,
+# sem que o usuário precise fazer nada além de rodar "python3 iniciar.py".
+# No Windows: passa direto, sem criar venv.
+# =============================================================================
+
+def _bootstrap_venv():
+    if os.name == 'nt':
+        return  # Windows: executa normalmente
+
+    base     = os.path.dirname(os.path.abspath(__file__))
+    venv_dir = os.path.join(base, 'SASE')
+    venv_py  = os.path.join(venv_dir, 'bin', 'python')
+
+    # Já estamos dentro da venv?
+    if os.path.abspath(sys.prefix) == os.path.abspath(venv_dir):
+        return
+
+    # Cria a venv se não existir
+    if not os.path.isfile(venv_py):
+        print("\n  Preparando ambiente virtual SASE...")
+        import subprocess as _sp
+        r = _sp.run(
+            [sys.executable, '-m', 'venv', venv_dir],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            print("  Aviso: nao foi possivel criar o ambiente virtual.")
+            print("  " + r.stderr.strip())
+            print("  Continuando sem isolamento...\n")
+            return
+        print("  Ambiente criado. Reiniciando dentro do ambiente isolado...\n")
+
+    # Substitui o processo atual pelo Python da venv (sem abrir nova janela).
+    # os.execv não retorna — a partir daqui o script roda com o Python da venv.
+    os.execv(venv_py, [venv_py] + sys.argv)
+
+_bootstrap_venv()
+
+# =============================================================================
+# Imports normais — no Linux, já estamos dentro da venv a partir daqui.
+# =============================================================================
+
+import subprocess
 import time
 import threading
 
-if os.name == "nt":
+_TTY = sys.stdout.isatty()
+
+if _TTY and os.name == "nt":
     os.system("")   # habilita ANSI no Windows
 
-R  = "\033[0m"
-B  = "\033[1m"
-D  = "\033[2m"
+R  = "\033[0m"  if _TTY else ""
+B  = "\033[1m"  if _TTY else ""
+D  = "\033[2m"  if _TTY else ""
 
-VD = "\033[92m"     # verde
-AM = "\033[93m"     # amarelo
-AZ = "\033[94m"     # azul
-CI = "\033[96m"     # ciano
-BR = "\033[97m"     # branco
-VM = "\033[91m"     # vermelho
+VD = "\033[92m" if _TTY else ""    # verde
+AM = "\033[93m" if _TTY else ""    # amarelo
+AZ = "\033[94m" if _TTY else ""    # azul
+CI = "\033[96m" if _TTY else ""    # ciano
+BR = "\033[97m" if _TTY else ""    # branco
+VM = "\033[91m" if _TTY else ""    # vermelho
 
 base = os.path.dirname(os.path.abspath(__file__))
 py   = sys.executable
 
 DEPENDENCIAS = [
-    ("pygame", "pygame", False),
-    ("fpdf",   "fpdf2",  False),
+    ("pygame",  "pygame",  False),
+    ("fpdf",    "fpdf2",   False),
+    ("pyttsx3", "pyttsx3", False),
 ]
 
 # ---------------------------------------------------------------------------
@@ -34,10 +82,11 @@ class Spinner:
     _FRAMES = ["|", "/", "-", "\\"]
 
     def __init__(self, msg):
-        self._msg   = msg
-        self._stop  = threading.Event()
-        self._th    = threading.Thread(target=self._run, daemon=True)
-        self._th.start()
+        self._msg = msg
+        if _TTY:
+            self._stop = threading.Event()
+            self._th   = threading.Thread(target=self._run, daemon=True)
+            self._th.start()
 
     def _run(self):
         i = 0
@@ -49,26 +98,36 @@ class Spinner:
             i += 1
 
     def _parar(self):
-        self._stop.set()
-        self._th.join()
+        if _TTY:
+            self._stop.set()
+            self._th.join()
 
     def ok(self, detalhe=""):
         self._parar()
-        extra = "  {}{}{}".format(D, detalhe, R) if detalhe else ""
-        print("\r  [{}{}OK{}] {}{}{}{}   ".format(
-            B, VD, R, B, self._msg, R, extra))
+        det = ("  " + detalhe) if detalhe else ""
+        if _TTY:
+            extra = "  {}{}{}".format(D, detalhe, R) if detalhe else ""
+            print("\r  [{}{}OK{}] {}{}{}{}   ".format(B, VD, R, B, self._msg, R, extra))
+        else:
+            print("  [ OK ] {}{}".format(self._msg, det))
 
     def aviso(self, detalhe=""):
         self._parar()
-        extra = "  {}{}{}".format(D, detalhe, R) if detalhe else ""
-        print("\r  [{}{}!!{}] {}{}{}{}   ".format(
-            B, AM, R, B, self._msg, R, extra))
+        det = ("  " + detalhe) if detalhe else ""
+        if _TTY:
+            extra = "  {}{}{}".format(D, detalhe, R) if detalhe else ""
+            print("\r  [{}{}!!{}] {}{}{}{}   ".format(B, AM, R, B, self._msg, R, extra))
+        else:
+            print("  [ !! ] {}{}".format(self._msg, det))
 
     def erro(self, detalhe=""):
         self._parar()
-        extra = "  {}{}{}".format(VM, detalhe, R) if detalhe else ""
-        print("\r  [{}{}ERR{}] {}{}{}{}   ".format(
-            B, VM, R, B, self._msg, R, extra))
+        det = ("  " + detalhe) if detalhe else ""
+        if _TTY:
+            extra = "  {}{}{}".format(VM, detalhe, R) if detalhe else ""
+            print("\r  [{}{}ERR{}] {}{}{}{}   ".format(B, VM, R, B, self._msg, R, extra))
+        else:
+            print("  [ERR] {}{}".format(self._msg, det))
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +142,9 @@ def _secao(titulo):
     print("  {}{}{}{} {}".format(B, CI, titulo, R, D + "-" * (48 - len(titulo)) + R))
 
 def _escrever(texto, delay=0.025, cor=BR):
+    if not _TTY:
+        print(texto)
+        return
     sys.stdout.write(cor)
     for ch in texto:
         sys.stdout.write(ch)
@@ -108,13 +170,16 @@ def _banner():
     os.system("cls" if os.name == "nt" else "clear")
     _linha(cor=B + CI)
     for row in BANNER:
-        sys.stdout.write(B + BR)
-        for ch in row:
-            sys.stdout.write(ch)
-            sys.stdout.flush()
-            time.sleep(0.004)
-        sys.stdout.write(R + "\n")
-        time.sleep(0.05)
+        if _TTY:
+            sys.stdout.write(B + BR)
+            for ch in row:
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+                time.sleep(0.004)
+            sys.stdout.write(R + "\n")
+            time.sleep(0.05)
+        else:
+            print(row)
     print()
     _escrever("  Sistema de Atendimento por Senha Eletronica", delay=0.015, cor=B + BR)
     _escrever("  Instituto Federal do Ceara  |  Campus Crato  |  Sistemas Distribuidos",
@@ -158,8 +223,6 @@ def _pip(pacote):
     except subprocess.TimeoutExpired:
         return False, "pip demorou mais de 3 minutos."
     except Exception as e:
-
-        
         return False, str(e)
 
 
@@ -167,6 +230,17 @@ def _import_ok(modulo):
     return subprocess.run(
         [py, "-c", "import {}".format(modulo)], capture_output=True
     ).returncode == 0
+
+
+def _verificar_espeak_linux():
+    """No Linux, verifica se espeak está disponível (backend de voz do pyttsx3)."""
+    import shutil
+    sp = Spinner("espeak-ng (backend de voz)")
+    time.sleep(0.2)
+    if shutil.which('espeak-ng') or shutil.which('espeak'):
+        sp.ok("disponivel no sistema")
+    else:
+        sp.aviso("nao encontrado — instale com:  sudo apt install espeak-ng")
 
 
 def _verificar_dependencias():
@@ -182,7 +256,9 @@ def _verificar_dependencias():
         except ImportError:
             pass
 
-        sp = Spinner("{} — instalando...".format(pacote))
+        if not _TTY:
+            print("  [ .. ] {} — instalando...".format(pacote))
+        sp = Spinner(pacote)
         sucesso, stderr = _pip(pacote)
 
         if not sucesso:
@@ -201,6 +277,10 @@ def _verificar_dependencias():
             sp.ok("instalado com sucesso")
         else:
             sp.aviso("instalado mas nao carregou — funcoes podem falhar")
+
+    # No Linux, verifica o backend de voz do pyttsx3
+    if sys.platform.startswith('linux'):
+        _verificar_espeak_linux()
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +307,9 @@ def _proc(caminho):
 
 
 def _barra(duracao, largura=34):
+    if not _TTY:
+        time.sleep(duracao)
+        return
     for i in range(largura + 1):
         pct  = int((i / largura) * 100)
         fill = VD + "=" * i + R

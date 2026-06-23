@@ -550,7 +550,6 @@ class AppTerminalAtendimento:
                         "tipo":  "Prioritario" if senha.startswith("P") else "Normal",
                         "hora":  datetime.now(),
                     })
-                    audio.tocar()
 
             elif tipo == "erro":
                 self.lbl_conexao.config(text="● Erro", fg="#e74c3c")

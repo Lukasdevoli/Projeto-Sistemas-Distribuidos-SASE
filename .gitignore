@@ -1,4 +1,3 @@
-.claude/
 __pycache__/
 *.pyc
 *.pyo
@@ -10,3 +9,4 @@ sons/*.flac
 *.wav
 *.ogg
 *.flac
+SASE/

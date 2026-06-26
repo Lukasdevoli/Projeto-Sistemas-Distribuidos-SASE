@@ -468,14 +468,26 @@ def _verificar_tkinter():
                 return True
         sp2.erro("falhou (execute manualmente: sudo {} {})".format(nome_mgr, ' '.join(cmd_args[1:])))
         break  # achamos o gerenciador certo mas falhou: não tentar os outros
-    # Caminho final: orienta o usuário a instalar manualmente por distribuição.
+    # Caminho final: orienta o usuário a instalar manualmente e aguarda.
     print()
     print("  {}{}ACAO NECESSARIA:{} Instale o Tk manualmente:".format(AM, B, R))
     print("    Arch Linux:    {}sudo pacman -S tk{}".format(B, R))
     print("    Ubuntu/Debian: {}sudo apt install python3-tk{}".format(B, R))
     print("    Fedora:        {}sudo dnf install python3-tkinter{}".format(B, R))
     print()
-    return False
+
+    while True:
+        resposta = input("  Pressione ENTER apos instalar o Tk para tentar novamente, ou 'q' para sair: ").strip().lower()
+        if resposta == 'q':
+            sys.exit(0)
+        # Revalida após o usuário instalar manualmente.
+        res = subprocess.run([py, "-c", "import tkinter"], capture_output=True)
+        if res.returncode == 0:
+            print("  {}{}[OK]{} tkinter disponivel agora!{}".format(B, VD, R, ""))
+            print()
+            return True
+        print("  {}{}[ERR]{} tkinter ainda nao disponivel. Instale o pacote e tente novamente.{}".format(B, VM, R, ""))
+        print()
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +810,10 @@ def _abrir_modulos():
 if __name__ == "__main__":
     _banner()
     _verificar_python()
-    _verificar_tkinter()
+    tk_ok = _verificar_tkinter()
+    if not tk_ok:
+        # _verificar_tkinter já exibiu instruções e aguardou o usuário.
+        # Se chegou aqui sem tk, encerra sem tentar abrir os módulos GUI.
+        sys.exit(1)
     _verificar_dependencias()
     _abrir_modulos()

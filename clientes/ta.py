@@ -29,6 +29,55 @@
 # VERSÃO ATUAL — GUI com chassi físico desenhado em Canvas (terminal de balcão)
 # =============================================================================
 
+"""clientes/ta.py — Terminal de Atendimento (TA) do sistema SASE.
+
+PROPÓSITO
+    Aplicação cliente operada pelo ATENDENTE no guichê. Sua única função
+    operacional é "chamar a próxima senha" da fila gerenciada pelo servidor
+    central (SRV). Cada instância representa fisicamente um guichê (1, 2, 3...).
+
+O QUE FAZ
+    1. Identifica o guichê (via argumento --guiche=X ou diálogo ao usuário).
+    2. Abre uma conexão TCP PERSISTENTE com o SRV e registra o guichê enviando
+       "TA_CONECTAR|<id_guiche>".
+    3. A cada clique em "CHAMAR PRÓXIMA SENHA", envia "TA_SOLICITAR|<id_guiche>"
+       e aguarda a resposta do SRV com a senha a ser atendida.
+    4. Atualiza o display (senha grande) e o histórico da sessão.
+    5. Permite gerar relatório (TXT/PDF) dos atendimentos do guichê.
+
+COMO USA / EXECUÇÃO
+    - Lançado manualmente: `python3 clientes/ta.py` (pergunta o nº do guichê).
+    - Lançado pelo SRV: `python3 clientes/ta.py --guiche=2`, permitindo que o
+      servidor abra várias instâncias com o número de guichê pré-configurado.
+
+PROTOCOLO DE COMUNICAÇÃO (camada de aplicação sobre TCP/IP)
+    Mensagens são strings UTF-8 no formato "COMANDO|ARGUMENTO":
+        TA_CONECTAR|<id>    -> registra o guichê na sessão (uma vez, ao abrir).
+        TA_SOLICITAR|<id>   -> pede a próxima senha (a cada chamada).
+    Resposta esperada do SRV (texto livre), tipicamente:
+        "Guichê X chama: N1 — Nome Aqui"  ou  "...Fila vazia..."
+
+    ENQUADRAMENTO ('\n'):
+        TCP é um fluxo de bytes sem fronteira de mensagem. Por isso TODA mensagem
+        do protocolo (enviada e recebida) termina com '\n'. O receptor acumula os
+        bytes em um buffer e processa uma linha por vez, evitando que dois
+        TA_SOLICITAR/respostas coalescidos sejam lidos como uma string única.
+
+    DIFERENÇA-CHAVE EM RELAÇÃO AO TS (Terminal de Senha):
+        O TS abre/fecha uma conexão a cada operação (curta e descartável).
+        O TA mantém UMA conexão persistente durante toda a sessão, pois o
+        atendente executa múltiplas chamadas e o socket precisa ficar vivo
+        para o ciclo recv()/send() contínuo (ver _loop_conexao).
+
+ARQUITETURA DE THREADS
+    Tkinter NÃO é thread-safe. Por isso a thread de rede (_loop_conexao) nunca
+    toca em widgets diretamente: ela publica eventos em uma queue.Queue, e a
+    thread principal (UI) os consome via root.after (padrão Queue + polling),
+    o mesmo padrão usado no TV (Terminal de Visualização).
+
+Disciplina: Sistemas Distribuídos — IFCE Campus Crato.
+"""
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 import socket
@@ -39,21 +88,31 @@ import os
 import random
 from datetime import datetime
 
+# Permite importar o pacote utils/ a partir da raiz do projeto, mesmo quando
+# o script é executado de dentro de clientes/. Sobe um nível e injeta no path
+# ANTES dos imports de utils — caso contrário o import abaixo falharia.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import conexao, audio, relatorio
+from utils import conexao, audio, relatorio  # conexao: HOST/PORTA; relatorio: TXT/PDF; audio: efeitos
 
-# === PALETA — Terminal de Balcão (antracito escuro + verde) ===
-PAREDE     = "#0a0a0a"    # fundo externo
+# ── PALETA — Terminal de Balcão (antracito escuro + verde) ──────────────────
+# Cores definidas como constantes para manter identidade visual consistente em
+# todos os widgets (chassi simulando um equipamento físico de balcão). O verde
+# fosforescente remete a displays de painéis de senha reais.
+PAREDE     = "#0a0a0a"    # fundo externo (preto da "parede" atrás da máquina)
 CORPO      = "#2a2a2a"    # chassi antracito escuro
-CORPO_HI   = "#484848"    # bevel highlight
-DISPLAY_BG = "#050e05"    # fundo do display (verde quase preto)
-COR_VERDE  = "#00e676"    # verde brilhante
-COR_BOTAO  = "#0d3a1a"    # fundo do botão CHAMAR
-COR_BTN_HI = "#1a7038"    # hover do botão
-COR_TEXTO  = "#e8f5e9"    # texto claro
-COR_SUBTEX = "#3a5a3a"    # subtexto
-BADGE_BG   = "#060e06"    # fundo do cabeçalho de guichê
+CORPO_HI   = "#484848"    # cor de bevel/realce das bordas (efeito 3D)
+DISPLAY_BG = "#050e05"    # fundo do display (verde quase preto, p/ contraste)
+COR_VERDE  = "#00e676"    # verde brilhante (estado conectado / senha ativa)
+COR_BOTAO  = "#0d3a1a"    # fundo do botão CHAMAR (verde escuro)
+COR_BTN_HI = "#1a7038"    # realce do botão ao passar/pressionar (hover)
+COR_TEXTO  = "#e8f5e9"    # texto claro padrão
+COR_SUBTEX = "#3a5a3a"    # subtexto / estados neutros
+BADGE_BG   = "#060e06"    # fundo do cabeçalho de guichê (placa de identificação)
 
+# ── EASTER EGGS ─────────────────────────────────────────────────────────────
+# _PIADAS: acervo de piadas de programador exibidas no TERMINAL (stdout) quando
+# o atendente abre o TA mas não informa nenhum número de guichê. É um brinde
+# de bom humor da equipe — não tem efeito sobre o protocolo nem sobre a UI.
 _PIADAS = [
     "Por que C recebe todas as meninas e Java nao?\nPorque C nao as trata como objetos.",
     "Dois programadores falam sobre vida social.\nUm diz: 'A unica data que recebo e o Java Update.'",
@@ -76,6 +135,10 @@ _PIADAS = [
     "Knock knock.\nQuem esta ai?\nJava!\n... ainda carregando.",
 ]
 
+# _NOMES_TRISTES: nomes de guichê "de castigo". Quando o usuário deixa o campo
+# em branco, o TA não trava: sorteia um destes rótulos bem-humorados e segue
+# normalmente. Garante que self.id_guiche nunca fique vazio (o que quebraria a
+# montagem das mensagens de protocolo "TA_CONECTAR|<id>").
 _NOMES_TRISTES = [
     "Guiche Sem Nome", "Ninguem me nomeou", "Alguem teve preguica de mim",
     "Guiche do Esquecido", "Eu Precisava de um Nome",
@@ -83,6 +146,15 @@ _NOMES_TRISTES = [
 ]
 
 def _piada_terminal():
+    """Imprime uma piada aleatória no terminal (stdout).
+
+    Chamada exclusivamente quando o atendente abre o TA e não digita o número
+    do guichê. Funciona como "castigo" bem-humorado por deixar o campo vazio.
+    É puramente cosmético: não afeta a conexão nem a lógica de atendimento.
+
+    Returns:
+        None: apenas escreve no stdout.
+    """
     sep = "=" * 52
     piada = random.choice(_PIADAS)
     print("\n" + sep)
@@ -94,33 +166,73 @@ def _piada_terminal():
 
 
 class AppTerminalAtendimento:
+    """Aplicação GUI do Terminal de Atendimento (um guichê = uma instância).
+
+    Responsabilidade:
+        Orquestrar a interface do atendente e a conexão persistente com o SRV,
+        traduzindo cliques em mensagens de protocolo e respostas do servidor em
+        atualizações de display/histórico.
+
+    Padrões de design empregados:
+        - Producer/Consumer com fila thread-safe: a thread de rede (produtora)
+          publica eventos em self._fila_ui; a thread Tk (consumidora) os aplica
+          em _poll_queue. Isola operações de socket do laço de eventos da UI.
+        - Reconexão automática (retry com backoff fixo) em _loop_conexao.
+
+    Relação com outros módulos:
+        - utils.conexao: fornece HOST e PORTA_SRV do servidor.
+        - utils.relatorio: gera TXT/PDF a partir de self._historico.
+        - SRV: contraparte servidora que mantém a fila e responde às chamadas.
+    """
+
     def __init__(self):
+        """Inicializa a aplicação: identifica o guichê, monta a UI e conecta.
+
+        Resolve o número do guichê em duas etapas (argv tem prioridade sobre o
+        diálogo), prepara o estado da sessão, constrói a interface e dispara
+        tanto o consumidor da fila (_poll_queue) quanto a thread de rede, e por
+        fim entra no laço de eventos do Tkinter (bloqueante).
+        """
         self.root = tk.Tk()
+        # Esconde a janela enquanto resolvemos o nº do guichê: o simpledialog
+        # abaixo precisa de uma raiz Tk viva, mas não queremos mostrar a janela
+        # principal ainda vazia/sem título correto.
         self.root.withdraw()
 
-        # Aceita --guiche=X passado pelo SRV ao lançar instâncias automaticamente
+        # ── Resolução do identificador do guichê ──────────────────────────
+        # Prioridade 1: argumento --guiche=X. O SRV usa exatamente esta forma
+        # para lançar várias instâncias do TA já com o número pré-configurado,
+        # sem intervenção humana (ex.: subprocess: python ta.py --guiche=3).
         id_guiche = None
         for arg in sys.argv[1:]:
             if arg.startswith("--guiche="):
                 id_guiche = arg.split("=", 1)[1].strip()
                 break
 
+        # Prioridade 2: execução manual — pergunta ao atendente.
         if not id_guiche:
             id_guiche = simpledialog.askstring(
                 "Terminal de Atendimento",
                 "Digite o numero deste guiche (ex: 1, 2, 3):",
                 parent=self.root
             )
+            # Campo vazio/cancelado: dispara o easter egg e atribui um nome
+            # "de castigo" para que id_guiche nunca seja vazio/None (evita
+            # quebrar as mensagens de protocolo que embutem o id).
             if not id_guiche or not id_guiche.strip():
                 _piada_terminal()
-                id_guiche = random.choice(_NOMES_TRISTES)
+                # replace(' ', '-'): o id vira UM único token sem espaços, senão
+                # o parsing de guichê na TV (que separa por espaços) extrairia o
+                # nome em vez do guichê, exibindo "DIRIJA-SE AO GUICHÊ <nome>".
+                id_guiche = random.choice(_NOMES_TRISTES).replace(' ', '-')
 
-        self.id_guiche     = id_guiche.strip()
-        self._socket       = None
-        self._fila_ui      = queue.Queue()
-        self._ativo        = True
-        self._historico    = []
-        self._contador_seq = 0
+        # ── Estado da sessão ──────────────────────────────────────────────
+        self.id_guiche     = id_guiche.strip()   # identidade enviada no protocolo
+        self._socket       = None                # socket persistente (None = desconectado)
+        self._fila_ui      = queue.Queue()       # ponte thread-rede -> thread-UI
+        self._ativo        = True                # flag de vida; encerra threads no fechar
+        self._historico    = []                  # lista de dicts p/ o relatório
+        self._contador_seq = 0                   # nº sequencial de chamadas na sessão
 
         self.root.deiconify()
         self.root.title(f"TA — Guichê {self.id_guiche}")
@@ -129,15 +241,22 @@ class AppTerminalAtendimento:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._fechar)
 
-        self._build_ui()
-        self._poll_queue()
-        self._conectar()
-        self.root.mainloop()
+        self._build_ui()      # monta widgets
+        self._poll_queue()    # inicia o consumidor de eventos da fila (na thread UI)
+        self._conectar()      # dispara a thread de rede
+        self.root.mainloop()  # entrega o controle ao laço de eventos do Tkinter
 
     # ── CORPO DA MÁQUINA (desenhado no Canvas) ────────────────────────────────
 
     def _build_ui(self):
-        W, H = 460, 640
+        """Cria o Canvas de fundo (chassi) e o Frame de conteúdo sobreposto.
+
+        Args:
+            (sem argumentos além de self)
+        Returns:
+            None: popula self._cvs e os widgets internos.
+        """
+        W, H = 460, 640  # dimensões fixas; a janela não é redimensionável
 
         self._cvs = tk.Canvas(
             self.root, bg=PAREDE, width=W, height=H,
@@ -152,6 +271,18 @@ class AppTerminalAtendimento:
         self._build_content(fc)
 
     def _desenhar_corpo(self, W, H):
+        """Desenha, no Canvas, o "chassi físico" do terminal (puramente estético).
+
+        Renderiza sombra, corpo, bevels 3D, parafusos, faixa de marca, LEDs,
+        ventilação e knobs. Nada aqui afeta a rede; é a casca visual que faz a
+        aplicação parecer um equipamento de balcão real.
+
+        Args:
+            W (int): largura útil do canvas em pixels.
+            H (int): altura útil do canvas em pixels.
+        Returns:
+            None: tudo é desenhado diretamente em self._cvs.
+        """
         c = self._cvs
 
         # Sombra
@@ -194,7 +325,9 @@ class AppTerminalAtendimento:
                                       fill="#003300", outline="#005500", width=1)
         c.create_oval(W - 68, 28, W - 54, 42, fill="#330000", outline="#550000", width=1)
 
-        # Botão Relatório na faixa
+        # Botão Relatório na faixa: como é desenhado no Canvas (não é um widget
+        # Button), o clique é capturado via tag_bind no retângulo -> abre a
+        # janela de relatório da sessão.
         self._btn_rel_cvs_x = 26
         self._btn_rel_cvs_y = 28
         self._btn_rel = c.create_rectangle(22, 26, 80, 46,
@@ -236,6 +369,18 @@ class AppTerminalAtendimento:
     # ── CONTEÚDO (Frame sobre o Canvas) ───────────────────────────────────────
 
     def _build_content(self, parent):
+        """Monta os widgets interativos sobre o chassi (Frame de conteúdo).
+
+        Cria o cabeçalho do guichê, o display da senha, o botão CHAMAR (já
+        desabilitado até a conexão ser confirmada), o rótulo de status e a
+        lista de histórico. Guarda referências (self.lbl_*, self.btn_chamar,
+        self.listbox) usadas posteriormente por _poll_queue para atualizar a UI.
+
+        Args:
+            parent (tk.Frame): contêiner onde os widgets são empacotados.
+        Returns:
+            None
+        """
         # ── CABEÇALHO GUICHÊ ──────────────────────────────────────────────
         frame_guiche_outer = tk.Frame(parent, bg="#0a1a0a", bd=4, relief="sunken")
         frame_guiche_outer.pack(fill="x", padx=8, pady=(8, 0))
@@ -316,6 +461,9 @@ class AppTerminalAtendimento:
             bg=COR_BOTAO, fg="#00ff7f",
             font=("Consolas", 12, "bold"),
             relief="flat", cursor="hand2", height=2,
+            # Começa desabilitado: só é liberado quando _poll_queue recebe o
+            # evento ("conexao", "ok"), garantindo que não se chame uma senha
+            # antes de o socket estar de fato registrado no SRV.
             state="disabled",
             command=self._chamar,
             activebackground=COR_BTN_HI, activeforeground="white"
@@ -356,6 +504,14 @@ class AppTerminalAtendimento:
     # ── LED ───────────────────────────────────────────────────────────────────
 
     def _set_led(self, ok: bool):
+        """Atualiza a cor dos LEDs de status (chassi e cabeçalho).
+
+        Args:
+            ok (bool): True pinta verde (conectado); False pinta verde-apagado
+                (sem conexão).
+        Returns:
+            None
+        """
         self._cvs.itemconfig(
             self._id_led,
             fill="#00bb44" if ok else "#003300",
@@ -370,57 +526,155 @@ class AppTerminalAtendimento:
     # ── CICLO DE VIDA ─────────────────────────────────────────────────────────
 
     def _fechar(self):
+        """Handler do botão fechar (WM_DELETE_WINDOW): encerra com segurança.
+
+        Baixa a flag self._ativo para que a thread de rede saia de seus laços
+        na próxima iteração, e então destrói a janela Tk.
+
+        Returns:
+            None
+        """
         self._ativo = False
         self.root.destroy()
 
     def _conectar(self):
+        """Inicia a thread de rede em modo daemon.
+
+        Usa-se uma thread separada porque o ciclo connect/recv é bloqueante e
+        travaria o laço de eventos do Tkinter. Como daemon, ela não impede o
+        processo de terminar quando a janela é fechada.
+
+        Returns:
+            None
+        """
         threading.Thread(target=self._loop_conexao, daemon=True).start()
 
     def _loop_conexao(self):
+        """Mantém a conexão PERSISTENTE com o SRV e reconecta automaticamente.
+
+        Executa em thread separada. O laço externo cuida da (re)conexão; o laço
+        interno faz a leitura contínua do socket. Diferentemente do TS — que
+        abre e fecha o socket a cada operação — aqui o socket permanece aberto
+        durante toda a sessão, pois o atendente fará várias chamadas e o SRV
+        empurra respostas pelo mesmo canal.
+
+        Fluxo do protocolo:
+            1. Conecta em (HOST, PORTA_SRV) com timeout de 5s só para o connect
+               (evita travar indefinidamente se o SRV estiver fora do ar).
+            2. Remove o timeout (settimeout(None)) para que o recv() seja
+               bloqueante durante a operação normal.
+            3. Registra o guichê: envia "TA_CONECTAR|<id_guiche>".
+            4. Notifica a UI ("conexao", "ok") e entra no loop de recv().
+            5. recv() retornando b"" indica que o SRV fechou a conexão -> sai
+               do loop interno para tentar reconectar.
+
+        Recuperação de falhas:
+            Qualquer erro de socket é silenciado; em seguida publica-se
+            ("reconectando",) e aguarda-se 3s (backoff fixo) antes de tentar de
+            novo. O loop só termina quando self._ativo vira False (app fechando).
+
+        Returns:
+            None: comunica resultados exclusivamente via self._fila_ui.
+        """
         import time
         while self._ativo:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                # Timeout apenas na fase de conexão: se o SRV estiver offline,
+                # falha rápido (5s) e cai no fluxo de reconexão.
                 s.settimeout(5)
                 s.connect((conexao.HOST, conexao.PORTA_SRV))
+                # A partir daqui o recv deve bloquear normalmente (sem timeout).
                 s.settimeout(None)
-                s.send(f"TA_CONECTAR|{self.id_guiche}".encode("utf-8"))
+                # Handshake de registro: identifica este guichê para o SRV.
+                # sendall garante o envio completo; '\n' delimita a mensagem.
+                s.sendall(f"TA_CONECTAR|{self.id_guiche}\n".encode("utf-8"))
                 self._socket = s
                 self._fila_ui.put(("conexao", "ok"))
 
+                # Loop de recepção: lê respostas do SRV até a conexão cair.
+                # Acumula bytes em `buffer` e processa UMA linha por vez
+                # (enquadramento '\n'), remontando/separando mensagens.
+                buffer = ""
                 while self._ativo:
                     dados = s.recv(1024)
                     if not dados:
+                        # Peer encerrou a conexão (FIN): força reconexão.
                         break
-                    self._fila_ui.put(("resposta", dados.decode("utf-8")))
+                    buffer += dados.decode("utf-8")
+                    while "\n" in buffer:
+                        linha, buffer = buffer.split("\n", 1)
+                        if linha:
+                            self._fila_ui.put(("resposta", linha))
 
             except (ConnectionRefusedError, TimeoutError, OSError):
+                # Falhas esperadas de rede (SRV fora, timeout, socket inválido).
                 pass
             except Exception:
+                # Salvaguarda: nenhuma exceção deve matar a thread de rede.
                 pass
             finally:
+                # Invalida o socket para que _chamar() saiba que está offline.
                 self._socket = None
 
             if not self._ativo:
                 break
+            # Backoff fixo de 3s entre tentativas para não martelar o servidor.
             self._fila_ui.put(("reconectando",))
             time.sleep(3)
 
     def _chamar(self):
+        """Solicita ao SRV a próxima senha (callback do botão CHAMAR).
+
+        Envia "TA_SOLICITAR|<id_guiche>" pelo socket persistente. A resposta
+        NÃO é lida aqui — ela chega de forma assíncrona pelo recv() em
+        _loop_conexao e é tratada em _poll_queue.
+
+        O botão é desabilitado IMEDIATAMENTE antes do envio para prevenir
+        duplo clique: sem isso, o atendente poderia disparar dois
+        "TA_SOLICITAR" em sequência e consumir/pular uma senha da fila sem
+        querer. O botão só volta a "normal" quando a resposta correspondente é
+        processada em _poll_queue.
+
+        Returns:
+            None: efeitos colaterais na UI e no socket; erros vão p/ a fila.
+        """
+        # Guarda: se a thread de rede invalidou o socket, não há o que enviar.
         if not self._socket:
             self.lbl_status.config(text="Sem conexão com o servidor.", fg="#e74c3c")
             return
+        # Desabilita ANTES do envio -> trava anti-duplo-clique (ver docstring).
         self.btn_chamar.config(state="disabled")
         self.lbl_status.config(text="Solicitando próxima senha...", fg="#f39c12")
         try:
-            self._socket.send(f"TA_SOLICITAR|{self.id_guiche}".encode("utf-8"))
+            # sendall garante o envio completo; '\n' delimita a mensagem.
+            self._socket.sendall(f"TA_SOLICITAR|{self.id_guiche}\n".encode("utf-8"))
         except Exception as e:
+            # Falha no send: reporta via fila (será tratado como evento "erro").
             self._fila_ui.put(("erro", f"Falha ao enviar: {e}"))
 
     # ── RELATÓRIO ─────────────────────────────────────────────────────────────
 
     def _abrir_relatorio(self):
+        """Abre a janela de relatório dos atendimentos desta sessão/guichê.
+
+        Monta o texto do relatório a partir de self._historico (delegando a
+        formatação e as estatísticas ao módulo utils.relatorio), exibe-o em uma
+        Toplevel somente-leitura e oferece botões para exportar em PDF ou TXT.
+
+        Detalhes:
+            - com_guiche=False: o relatório é de um único guichê, então a coluna
+              de guichê é redundante; a identidade já vai no título/extras.
+            - A geração de PDF é feita sob demanda (ao clicar em "Salvar PDF"),
+              via relatorio.gerar_pdf, que retorna (ok, msg) p/ tratamento de erro.
+
+        Returns:
+            None: cria uma janela Tk Toplevel.
+        """
         titulo = "RELATORIO DE ATENDIMENTOS - GUICHE {}".format(self.id_guiche)
+        # extras: pares chave/valor exibidos no cabeçalho do relatório.
+        # Identidade do guichê + estatísticas agregadas da sessão (totais,
+        # tempos médios etc.) calculadas pelo módulo relatorio.
         extras = {"Guiche": self.id_guiche}
         extras.update(relatorio._stats_sessao(self._historico))
         texto  = relatorio.gerar_txt(titulo, self._historico, com_guiche=False, extras=extras)
@@ -454,6 +708,7 @@ class AppTerminalAtendimento:
         frame_btns.pack(fill="x", padx=12, pady=10)
 
         def salvar_pdf():
+            """Exporta o relatório atual para PDF via diálogo "salvar como"."""
             path = filedialog.asksaveasfilename(
                 defaultextension=".pdf",
                 filetypes=[("PDF", "*.pdf")],
@@ -471,6 +726,7 @@ class AppTerminalAtendimento:
                 messagebox.showerror("Erro ao gerar PDF", msg, parent=janela)
 
         def salvar_txt():
+            """Salva o texto já renderizado do relatório em um arquivo .txt."""
             path = filedialog.asksaveasfilename(
                 defaultextension=".txt",
                 filetypes=[("Arquivo de texto", "*.txt")],
@@ -503,6 +759,25 @@ class AppTerminalAtendimento:
     # ── POLL ──────────────────────────────────────────────────────────────────
 
     def _poll_queue(self):
+        """Consome eventos da fila e atualiza a UI (padrão Queue + root.after).
+
+        Tkinter não é thread-safe, então a thread de rede nunca mexe em widgets;
+        ela apenas enfileira tuplas de evento em self._fila_ui. Este método roda
+        SEMPRE na thread principal: drena a fila, aplica as mudanças visuais e se
+        reagenda com root.after(100, ...) — um "polling" de 100 ms. É exatamente
+        o mesmo mecanismo usado no TV (Terminal de Visualização).
+
+        Tipos de evento tratados:
+            ("conexao", "ok")   -> marca conectado e habilita o botão CHAMAR.
+            ("reconectando",)    -> mostra estado de reconexão, desabilita botão.
+            ("resposta", msg)    -> processa a senha vinda do SRV (ver abaixo).
+            ("erro", msg)        -> exibe erro e desabilita o botão.
+
+        Returns:
+            None: reagenda a si mesmo indefinidamente enquanto a janela existir.
+        """
+        # Drena TODOS os eventos pendentes a cada ciclo (não só um), evitando
+        # acúmulo/atraso quando várias mensagens chegam entre dois polls.
         while not self._fila_ui.empty():
             evento = self._fila_ui.get()
             tipo = evento[0]
@@ -522,13 +797,19 @@ class AppTerminalAtendimento:
 
             elif tipo == "resposta":
                 msg = evento[1]
+                # Resposta recebida: reabilita o botão (fecha o ciclo iniciado
+                # pela trava anti-duplo-clique em _chamar).
                 self.btn_chamar.config(state="normal")
                 if "Fila vazia" in msg:
+                    # Não há senha a chamar: mantém o display em "---".
                     self.lbl_senha.config(text="---", fg=COR_SUBTEX)
                     self.lbl_status.config(text=msg, fg="#e67e22")
                 else:
-                    # formato: "Guichê X chama: N1 — Nome Aqui"
+                    # Parsing do protocolo de resposta do SRV.
+                    # Formato esperado: "Guichê X chama: N1 — Nome Aqui"
+                    # 1) descarta o prefixo até ": " para isolar "senha — nome";
                     parte_senha = msg.split(": ", 1)[-1] if ": " in msg else msg
+                    # 2) separa senha e nome pelo travessão " — " (pode não vir).
                     if " — " in parte_senha:
                         senha, nome = parte_senha.split(" — ", 1)
                         senha = senha.strip()
@@ -536,11 +817,15 @@ class AppTerminalAtendimento:
                     else:
                         senha = parte_senha.strip()
                         nome  = ""
+                    # Atualiza o display grande e a linha de status.
                     self.lbl_senha.config(text=senha, fg="#2ecc71")
                     self.lbl_status.config(
                         text=f"{senha} — {nome}" if nome else senha,
                         fg=COR_TEXTO
                     )
+                    # Registra no histórico visual (topo da lista) e no log de
+                    # sessão usado pelo relatório. O tipo é inferido pelo prefixo
+                    # da senha: "P..." = Prioritário, demais = Normal.
                     self.listbox.insert(0, msg)
                     self._contador_seq += 1
                     self._historico.append({
@@ -557,8 +842,13 @@ class AppTerminalAtendimento:
                 self.btn_chamar.config(state="disabled")
                 self._set_led(False)
 
+        # Reagenda o próximo ciclo de polling (100 ms) na thread da UI.
         self.root.after(100, self._poll_queue)
 
 
+# ── PONTO DE ENTRADA ────────────────────────────────────────────────────────
+# Instancia a aplicação quando o arquivo é executado diretamente
+# (ex.: `python3 clientes/ta.py` ou `python3 clientes/ta.py --guiche=2`).
+# O construtor chama mainloop(), então esta linha bloqueia até a janela fechar.
 if __name__ == "__main__":
     AppTerminalAtendimento()
